@@ -24,6 +24,7 @@ def _parse_args(argv):
     p.add_argument("--workspace", default=None, help="工作区根目录（默认当前目录）")
     p.add_argument("--max-steps", type=int, default=None, help="最大迭代步数")
     p.add_argument("--budget", type=int, default=None, help="上下文 token 预算（覆盖 AGENT_MAX_CONTEXT_TOKENS）")
+    p.add_argument("--tools", action="store_true", help="列出已注册的工具并退出")
     return p.parse_args(argv)
 
 
@@ -98,7 +99,18 @@ def _repl(loop, renderer, log_result) -> None:
 
 
 def main(argv=None) -> int:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
     args = _parse_args(argv)
+    if args.tools:
+        from .tools import TOOLS, register_all
+        register_all()
+        for name in sorted(TOOLS):
+            desc = TOOLS[name]["schema"]["function"]["description"]
+            print(f"{name}: {desc}")
+        return 0
     workspace = Path(args.workspace or os.getcwd()).resolve()
 
     from .events import event_to_dict

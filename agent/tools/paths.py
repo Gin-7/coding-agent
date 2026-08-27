@@ -21,3 +21,9 @@ def resolve_workspace_path(workspace: Path, path: str) -> Path:
     except ValueError:
         raise PathError(f"路径越界（仅允许工作区内）：{path}")
     return p
+
+
+def ensure_safe_file(p: Path, path: str) -> None:
+    """凭据保护：.env 系列文件（含 .env.local 等）不允许 agent 读写。"""
+    if p.name.startswith(".env"):
+        raise PathError(f"凭据文件受保护，不允许访问：{path}")

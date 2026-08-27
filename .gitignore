@@ -2,6 +2,9 @@
 .env
 *.env
 
+# 其它工具的本地状态
+.workbuddy/
+
 # Python
 __pycache__/
 *.py[cod]

@@ -29,6 +29,20 @@ python -m agent                    # 交互式 REPL，多轮对话
 | `AGENT_MAX_CONTEXT_TOKENS` | `56000` | 上下文预算 |
 | `AGENT_MAX_STEPS` | `30` | 最大迭代步数 |
 
+## 内置工具
+
+| 工具 | 说明 |
+|---|---|
+| `read_file` | 读取文件（带行号，分页） |
+| `write_file` | 创建/整体覆盖写入文件（UTF-8） |
+| `edit_file` | 精确搜索-替换，保留原文件行尾风格 |
+| `list_dir` | 目录浏览（文件/子目录/大小） |
+| `search` | 递归搜索文件内容（子串/正则） |
+| `run_command` | 执行 cmd 命令（超时 + 进程树终止 + 危险命令黑名单） |
+| `finish` | 完成任务标记 |
+
+凭据文件（`.env` 系列）对 agent 不可读写、不可搜索。
+
 ## 测试
 
 ```bash

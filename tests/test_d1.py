@@ -205,6 +205,96 @@ def test_finish_preserves_pairing(tmp):
             i += 1
 
 
+def test_edit_file_roundtrip(tmp):
+    from agent.tools import ToolContext, dispatch, register_all
+    register_all()
+    ws = _ws(tmp, "edit")
+    ctx = ToolContext(ws)
+    r = dispatch("write_file", {"path": "e.txt", "content": "hello world\nhello agent\n"}, ctx)
+    assert r["ok"]
+    r = dispatch("edit_file", {"path": "e.txt", "old": "hello world", "new": "hello python"}, ctx)
+    assert r["ok"] and "已修改" in r["output"]
+    r = dispatch("read_file", {"path": "e.txt"}, ctx)
+    assert r["ok"] and "hello python" in r["output"] and "hello agent" in r["output"]
+
+
+def test_edit_file_ambiguous_and_missing(tmp):
+    from agent.tools import ToolContext, dispatch, register_all
+    register_all()
+    ws = _ws(tmp, "edit2")
+    ctx = ToolContext(ws)
+    r = dispatch("write_file", {"path": "e.txt", "content": "x\nx\ny\n"}, ctx)
+    assert r["ok"]
+    # 出现 2 次 → 拒绝
+    r = dispatch("edit_file", {"path": "e.txt", "old": "x", "new": "z"}, ctx)
+    assert "不唯一" in r["output"]
+    # 不存在 → 提示
+    r = dispatch("edit_file", {"path": "e.txt", "old": "nope", "new": "z"}, ctx)
+    assert "未找到" in r["output"]
+
+
+def test_edit_file_crlf_compat(tmp):
+    from agent.tools import ToolContext, dispatch, register_all
+    register_all()
+    ws = _ws(tmp, "edit3")
+    ctx = ToolContext(ws)
+    (ws / "crlf.txt").write_bytes(b"line1\r\nline2\r\n")
+    r = dispatch("edit_file", {"path": "crlf.txt", "old": "line1", "new": "changed"}, ctx)
+    assert r["ok"] and "已修改" in r["output"]
+    assert (ws / "crlf.txt").read_bytes() == b"changed\r\nline2\r\n"
+
+
+def test_list_dir(tmp):
+    from agent.tools import ToolContext, dispatch, register_all
+    register_all()
+    ws = _ws(tmp, "listdir")
+    (ws / "sub").mkdir()
+    (ws / "a.txt").write_text("x", encoding="utf-8")
+    (ws / "b.py").write_text("y", encoding="utf-8")
+    ctx = ToolContext(ws)
+    r = dispatch("list_dir", {"path": "."}, ctx)
+    assert r["ok"] and "a.txt" in r["output"] and "sub/" in r["output"]
+
+
+def test_search(tmp):
+    from agent.tools import ToolContext, dispatch, register_all
+    register_all()
+    ws = _ws(tmp, "search")
+    (ws / "one.py").write_text("def hello():\n    pass\n", encoding="utf-8")
+    (ws / "two.txt").write_text("HELLO world\n", encoding="utf-8")
+    (ws / "__pycache__").mkdir()
+    (ws / "__pycache__" / "junk.py").write_text("def hello():\n    pass\n", encoding="utf-8")
+    ctx = ToolContext(ws)
+    r = dispatch("search", {"pattern": "hello"}, ctx)
+    assert r["ok"] and "one.py:1" in r["output"] and "two.txt:1" in r["output"]
+    # 默认跳过 __pycache__（大小写不敏感匹配 HELLO → two.txt 命中）
+    assert "junk.py" not in r["output"]
+    assert "2 处匹配" in r["output"]
+    # 正则模式
+    r = dispatch("search", {"pattern": r"def \w+\(", "regex": True}, ctx)
+    assert r["ok"] and "one.py:1" in r["output"]
+    # 无匹配
+    r = dispatch("search", {"pattern": "notexist"}, ctx)
+    assert r["ok"] and "未找到" in r["output"]
+
+
+def test_credentials_protected(tmp):
+    """.env 系列凭据文件：read/write/edit 全部拒绝，search 跳过。"""
+    from agent.tools import ToolContext, dispatch, register_all
+    register_all()
+    ws = _ws(tmp, "creds")
+    (ws / ".env").write_text("SECRET_KEY=abc123\n", encoding="utf-8")
+    ctx = ToolContext(ws)
+    r = dispatch("read_file", {"path": ".env"}, ctx)
+    assert not r["ok"] and "保护" in r["output"]
+    r = dispatch("write_file", {"path": ".env", "content": "x"}, ctx)
+    assert not r["ok"] and "保护" in r["output"]
+    r = dispatch("edit_file", {"path": ".env", "old": "x", "new": "y"}, ctx)
+    assert not r["ok"] and "保护" in r["output"]
+    r = dispatch("search", {"pattern": "SECRET_KEY"}, ctx)
+    assert r["ok"] and "未找到" in r["output"]
+
+
 def main() -> int:
     import shutil
     tmp = TMP_ROOT / "run"

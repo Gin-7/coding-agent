@@ -239,6 +239,7 @@ python -m agent "任务描述"               # 一次性模式（演示/自动�
 | 命令黑名单 | 拦截危险操作（`del /f /s`、`rd /s /q`、`format` 等） |
 | 超时 | `run_command` 强制 timeout（默认 120s），防挂死 |
 | 凭据 | API key 仅从环境变量 / 未入库 `.env` 读取；`.gitignore` 排除 `.env` |
+| 凭据保护 | agent 工具不可读写/搜索 `.env` 系列文件（凭据不进入模型上下文） |
 | 输出截断 | 命令输出截断回传，防上下文被撑爆 |
 
 ---
@@ -249,7 +250,7 @@ python -m agent "任务描述"               # 一次性模式（演示/自动�
 |---|---|---|
 | D1 | 仓库初始化 + `llm.py` + `events.py` + 最小主循环（read_file / write_file / run_command / finish 四工具） | ✅ 完成：agent 自主跑通真实小任务（mock + 真实 Qwen API 双验证） |
 | D2 | `context.py` 预算 + 裁剪 + `loop.py` 错误处理完善 | ✅ 完成：错误自我修复闭环实测通过；裁剪在真实 API 下配对完整（budget=400 触发验证）；修复 finish 调用后历史配对缺失问题 |
-| D3 | 补齐 edit_file / list_dir / search + 流式输出 + CLI 打磨 + session.py | CLI 完整可用，事件日志落盘 |
+| D3 | 补齐 edit_file / list_dir / search + 流式输出 + CLI 打磨 + session.py | ✅ 完成：三个新工具实测通过（真实 API 综合任务验证）；凭据文件保护；--tools 列出工具 |
 | D4 | compaction + 文本协议兜底（特色功能） | 长任务稳定；无 tool calling 模型可跑 |
 | D5 | 测试（parser / context / tools）+ 使用文档 + 演示准备 | 全流程稳定可用，演示素材齐备 |
 | D6 | 缓冲：真实任务演练、修 bug、文档打磨 | 全流程彩排 |
