@@ -1,0 +1,10 @@
+# 统一行尾为 LF（Windows 下避免 CRLF 噪音）
+* text=auto
+*.py text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+.gitattributes text eol=lf
