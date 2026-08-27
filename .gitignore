@@ -21,6 +21,10 @@ sessions/
 # 工作区记忆与编辑备份
 .agent-memory.md
 .agent-backups/
+.agent-workspaces.json
+
+# mock 演示产物
+hello.txt
 
 # 编辑器
 .vscode/

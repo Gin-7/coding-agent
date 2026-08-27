@@ -140,6 +140,7 @@ class WebAgentServer:
         self.loop = loop
         self.hub = hub
         self.workspace = workspace
+        self.default_root = workspace.root
         self.system_prompt = ""
         self.budget = 56000
         self.workspaces = {str(workspace.root): workspace}
@@ -147,6 +148,65 @@ class WebAgentServer:
         self.interrupt_event = threading.Event()
         self._pending_confirm = None
         self._lock = threading.Lock()
+        self._load_registry()
+
+    # ---------- 工作区注册表（左侧边栏展示所有工作区） ----------
+
+    def _registry_path(self):
+        return self.default_root / ".agent-workspaces.json"
+
+    def _load_registry(self):
+        p = self._registry_path()
+        paths = []
+        if p.exists():
+            try:
+                paths = json.loads(p.read_text(encoding="utf-8")).get("workspaces", [])
+            except (json.JSONDecodeError, OSError):
+                paths = []
+        if str(self.default_root) not in paths:
+            paths.insert(0, str(self.default_root))
+        seen = set()
+        for raw in paths:
+            key = str(Path(raw).resolve())
+            if key in seen:
+                continue
+            seen.add(key)
+            if key in self.workspaces:
+                continue
+            if Path(raw).is_dir():
+                try:
+                    self.workspaces[key] = Workspace(Path(raw))
+                except OSError:
+                    pass
+
+    def _save_registry(self):
+        root = str(self.default_root)
+        paths = [root] + [str(w.root) for w in self.workspaces.values() if str(w.root) != root]
+        seen, out = set(), []
+        for x in paths:
+            if x not in seen:
+                seen.add(x)
+                out.append(x)
+        try:
+            self._registry_path().write_text(
+                json.dumps({"workspaces": out}, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+
+    def list_workspaces(self) -> list:
+        result = []
+        for key, ws in self.workspaces.items():
+            result.append({
+                "root": str(ws.root),
+                "name": ws.root.name or str(ws.root),
+                "is_active": ws is self.workspace,
+                "active": ws.active_filename,
+                "sessions": [
+                    {"filename": r.filename, "name": r.name, "mtime": r.mtime}
+                    for r in ws.list_sessions()
+                ],
+            })
+        return result
 
     def bind_loop(self, loop):
         """绑定 loop 并从其 ctx 派生 system_prompt / budget，激活默认会话。"""
@@ -167,6 +227,7 @@ class WebAgentServer:
             self.workspaces[str(p)] = ws
         self.workspace = ws
         self._activate(ws.get_active())
+        self._save_registry()
         return True, str(p)
 
     def workspace_meta(self) -> dict:
@@ -427,6 +488,8 @@ def build_handler(server: WebAgentServer):
                 self._json(data, code)
             elif path == "/api/workspace":
                 self._json(server.workspace_meta())
+            elif path == "/api/workspaces":
+                self._json(server.list_workspaces())
             elif path == "/api/session/messages":
                 fn = (query.get("filename") or [""])[0]
                 data, code = server.session_messages(fn)

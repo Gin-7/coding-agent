@@ -1,0 +1,104 @@
+"""Web 服务器测试：静态页、工具、工作区/会话、运行任务、SSE、文件夹浏览。"""
+import json as _json
+import sys
+import threading
+import time
+import urllib.parse as _parse
+import urllib.request
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from test_common import make_ws, run_tests
+
+
+def test_web_server_endpoints(tmp):
+    from agent.context import Context
+    from agent.loop import AgentLoop
+    from agent.mock import MockLLM
+    from agent.prompts import make_system_prompt
+    from agent.tools import ToolContext, register_all
+    from agent.web import create_server
+    register_all()
+
+    ws = make_ws(tmp, "web")
+    confirm_calls = []
+
+    def factory(on_event, hub, web):
+        return AgentLoop(MockLLM(), Context(make_system_prompt(str(ws)), 56000), ToolContext(ws),
+                         max_steps=10, on_event=on_event,
+                         confirm=lambda n, d: (confirm_calls.append(n), True)[1])
+
+    httpd, web = create_server(ws, factory, port=0)
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        with urllib.request.urlopen(base + "/", timeout=10) as r:
+            assert r.status == 200 and b"Coding Agent" in r.read()
+        with urllib.request.urlopen(base + "/api/tools", timeout=10) as r:
+            tools = _json.loads(r.read())
+        assert "read_file" in tools and "git_commit" in tools
+
+        with urllib.request.urlopen(base + "/api/workspace", timeout=10) as r:
+            meta = _json.loads(r.read())
+        assert "web" in meta["root"]
+        assert len(meta["sessions"]) >= 1 and meta["active"]
+
+        # 列出所有工作区（侧边栏树）
+        with urllib.request.urlopen(base + "/api/workspaces", timeout=10) as r:
+            ws_list = _json.loads(r.read())
+        assert len(ws_list) >= 1 and ws_list[0]["is_active"]
+
+        req = urllib.request.Request(base + "/api/session/new", data=b"{}",
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert _json.loads(r.read())["ok"]
+
+        # 先连 SSE 再运行，避免丢早期事件
+        sse = urllib.request.urlopen(base + "/api/events", timeout=30)
+        req = urllib.request.Request(base + "/api/run", data=_json.dumps(
+            {"task": "演示任务"}).encode("utf-8"), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert _json.loads(r.read())["ok"]
+        events = []
+        try:
+            deadline = 20
+            start = time.time()
+            while time.time() - start < deadline:
+                line = sse.readline().decode("utf-8", errors="replace").strip()
+                if line.startswith("data: "):
+                    ev = _json.loads(line[6:])
+                    events.append(ev)
+                    if ev["type"] == "RunResult":
+                        break
+        finally:
+            sse.close()
+        types = [e["type"] for e in events]
+        assert "UserMessage" in types and "ToolCallEvent" in types and "RunResult" in types
+        assert events[-1]["status"] == "finished"
+
+        # 文件夹选择器：根浏览（盘符）与具体目录
+        with urllib.request.urlopen(base + "/api/fs/browse", timeout=10) as r:
+            b = _json.loads(r.read())
+        assert b.get("isRoot") and len(b["entries"]) >= 1
+        with urllib.request.urlopen(base + "/api/fs/browse?path=" + _parse.quote(str(ws)), timeout=10) as r:
+            assert "entries" in _json.loads(r.read())
+
+        # 会话切换
+        req = urllib.request.Request(base + "/api/session/select", data=_json.dumps(
+            {"filename": meta["active"]}).encode("utf-8"), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert _json.loads(r.read())["ok"]
+
+        with urllib.request.urlopen(base + "/api/files?path=.", timeout=10) as r:
+            assert "path" in _json.loads(r.read())
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def main() -> int:
+    return run_tests(globals())
+
+
+if __name__ == "__main__":
+    sys.exit(main())

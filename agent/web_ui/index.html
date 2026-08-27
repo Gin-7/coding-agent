@@ -7,88 +7,80 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<header id="topbar">
-  <div id="brand"><span class="mark">⌘</span><span>Coding Agent</span></div>
-  <div class="top-group">
-    <button id="btn-workspace" class="pill" title="选择工作区文件夹">
-      <span class="pill-label">工作区</span><span id="ws-name">选择文件夹</span>
+<div id="middle">
+  <aside id="sidebar">
+    <div id="brand"><span class="mark">⌘</span><span>Coding Agent</span></div>
+    <div class="tree-label">工作区</div>
+    <div class="sidebar-scroll" id="tree-wrap"><div id="tree"></div></div>
+    <button id="btn-add-workspace" class="side-btn add">
+      <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+      添加工作区
     </button>
-    <div class="session-box">
-      <select id="session-select" title="切换会话"></select>
-      <button id="btn-session-new" class="icon" title="新建会话">＋</button>
+    <div class="sidebar-foot">
+      <button id="btn-settings" class="side-btn">
+        <svg viewBox="0 0 24 24"><path fill="currentColor" d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7zm9 3.5-2.1.6a6 6 0 0 1-1 2.4l1.2 1.8-1.4 1.4-1.8-1.2a6 6 0 0 1-2.4 1L9.4 20h-2l-.6-2.1a6 6 0 0 1-2.4-1l-1.8 1.2-1.4-1.4 1.2-1.8a6 6 0 0 1-1-2.4L.5 12l2.1-.6a6 6 0 0 1 1-2.4L2.4 7.2l1.4-1.4 1.8 1.2a6 6 0 0 1 2.4-1L8.6 3.5h2l.6 2.1a6 6 0 0 1 2.4 1l1.8-1.2 1.4 1.4-1.2 1.8a6 6 0 0 1 1 2.4L21 12z"/></svg>
+        设置
+      </button>
     </div>
-  </div>
-  <div class="top-right">
-    <button id="btn-theme" class="icon" title="切换明暗主题">🌙</button>
-    <button id="btn-settings" class="icon" title="设置">⚙</button>
-    <span id="status-dot"></span>
-    <span id="status-text">空闲</span>
-    <button id="btn-interrupt" disabled>中断</button>
-  </div>
-</header>
+  </aside>
 
-<div id="main">
-  <div id="content">
-    <div id="chat">
+  <main id="chat">
+    <div id="chat-scroll">
       <div id="empty">
         <div class="logo">⌘</div>
         <h1>Coding Agent</h1>
-        <p>选择合适的文件夹作为工作区，输入任务开始</p>
+        <p>选择一个会话，或输入任务开始</p>
       </div>
       <div class="chat-col" id="chat-col"></div>
     </div>
-    <footer id="input-bar">
-      <div class="input-wrap">
-        <textarea id="input" rows="1" placeholder="输入任务，Enter 发送，Shift+Enter 换行"></textarea>
-        <button id="btn-run">运行</button>
-      </div>
-    </footer>
-  </div>
+  </main>
+
   <aside id="right-panel">
-    <div class="right-head">
-      <span>文件</span>
-      <button id="btn-file-up" class="icon" title="上级目录">↩</button>
-    </div>
+    <div class="right-head"><span>文件</span><button id="btn-file-up" class="icon">↩</button></div>
     <div class="panel-body"><div id="files"></div></div>
   </aside>
 </div>
 
-<!-- 设置抽屉 -->
-<div id="settings" class="drawer hidden">
-  <div class="drawer-menu">
-    <button class="menu-item active" data-tab="appearance">外观</button>
-    <button class="menu-item" data-tab="tools">工具</button>
-    <button class="menu-item" data-tab="about">关于</button>
-    <button id="btn-settings-close" class="menu-item close">✕</button>
+<footer id="input-bar">
+  <div class="input-wrap">
+    <textarea id="input" rows="1" placeholder="输入任务，Enter 发送，Shift+Enter 换行"></textarea>
+    <button id="btn-run" class="send">
+      <span class="ic-send"><svg viewBox="0 0 24 24"><path d="M3 11l18-8-8 18-2-8-8-2z" fill="currentColor"/></svg></span>
+      <span class="ic-stop"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg></span>
+      <span class="btn-label">发送</span>
+    </button>
   </div>
-  <div class="drawer-content">
-    <section id="tab-appearance" class="tab active">
-      <h3>主题</h3>
+</footer>
+
+<!-- 设置弹窗 -->
+<div id="settings" class="modal hidden">
+  <div class="modal-box">
+    <div class="modal-head"><h3>设置</h3><button id="btn-settings-close" class="close">✕</button></div>
+    <div class="settings-tabs">
+      <button class="st active" data-tab="appearance">外观</button>
+      <button class="st" data-tab="tools">工具</button>
+      <button class="st" data-tab="about">关于</button>
+    </div>
+    <div id="tab-appearance" class="stab active">
+      <h4>主题</h4>
       <div class="radio-group">
-        <label><input type="radio" name="theme" value="dark" checked>深色</label>
-        <label><input type="radio" name="theme" value="light">浅色</label>
+        <label class="radio-card"><input type="radio" name="theme" value="dark" checked><span>深色</span></label>
+        <label class="radio-card"><input type="radio" name="theme" value="light"><span>浅色</span></label>
       </div>
-    </section>
-    <section id="tab-tools" class="tab">
-      <h3>工具列表</h3>
-      <div id="tools"></div>
-    </section>
-    <section id="tab-about" class="tab">
-      <h3>关于</h3>
-      <p class="about-text">Coding Agent — 自研编程智能体。<br>事件驱动架构 · 零框架依赖。</p>
-    </section>
+    </div>
+    <div id="tab-tools" class="stab"><h4>工具</h4><div id="tools" class="tools-grid"></div></div>
+    <div id="tab-about" class="stab"><h4>关于</h4><p class="about-text">Coding Agent · 自研编程智能体<br>事件驱动架构 · 零框架依赖</p></div>
   </div>
 </div>
 
 <!-- 文件夹选择器 -->
 <div id="workspace-modal" class="modal hidden">
   <div class="modal-box">
-    <h3>选择工作区文件夹</h3>
+    <div class="modal-head"><h3>选择工作区文件夹</h3><button id="btn-workspace-cancel" class="close">✕</button></div>
     <div id="browse-path" class="browse-path"></div>
     <div id="browse-list" class="browse-list"></div>
     <div class="modal-actions">
       <button id="btn-browse-up" class="ghost">↩ 上级</button>
-      <button id="btn-workspace-cancel" class="danger">取消</button>
       <button id="btn-workspace-choose">选择此文件夹</button>
     </div>
   </div>
@@ -97,7 +89,7 @@
 <!-- 审批弹窗 -->
 <div id="confirm-modal" class="modal hidden">
   <div class="modal-box">
-    <h3 id="confirm-title"></h3>
+    <div class="modal-head"><h3 id="confirm-title"></h3></div>
     <pre id="confirm-desc"></pre>
     <div class="modal-actions">
       <button id="btn-approve">批准</button>

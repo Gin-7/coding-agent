@@ -91,11 +91,11 @@
 本地网页界面，浏览器作为渲染器（零额外依赖：后端 `http.server` + SSE，前端纯 HTML/CSS/JS）：
 
 - `python -m agent --web [--port N]` 启动；`GET /api/events` 为 SSE 事件流长连接
-- **多工作区**：`POST /api/workspace` 选择本地文件夹（`GET /api/fs/browse` 浏览服务器文件系统）
+- **多工作区**：`POST /api/workspace` 选择本地文件夹（`GET /api/fs/browse` 浏览服务器文件系统）；`GET /api/workspaces` 列出全部工作区及会话（左侧边栏树）
 - **多会话**：每工作区多会话，会话名由首轮对话决定；`POST /api/session/new`/`select` 新建/切换，`GET /api/session/messages` 取历史展示
 - `POST /api/run` 提交任务（工作线程运行，事件广播到所有订阅客户端）
 - 审批（plan/ask 模式）通过浏览器弹窗 `POST /api/confirm` 回传；`POST /api/interrupt` 在步骤边界中断
-- 前端：顶栏（工作区/会话/主题/设置/状态）、居中对话流（流式回复、可展开工具卡片、实时命令输出）、右侧文件面板、设置抽屉（菜单栏：明暗主题/工具/关于）
+- 前端：左侧边栏（工作区/会话树、设置入口）、居中对话流（流式回复、可展开工具卡片、实时命令输出）、右侧文件面板、居中设置弹窗（明暗主题/工具/关于）、发送↔中断按钮（矢量图标）
 
 ### 3.3 目录结构
 
