@@ -54,9 +54,23 @@ python -m agent --resume "继续上一个任务：..."   # 从最近会话恢复
 python -m agent --resume-file sessions/session-xxx.jsonl "..."  # 指定会话恢复
 python -m agent --permission ask "任务"           # 审批模式：命令/提交需确认
 python -m agent --plan "任务"                     # 规划模式：先计划（只读探索）批准后执行
+python -m agent --web                             # 启动 Web UI（默认 http://127.0.0.1:8080）
+python -m agent --web --mock --port 8090          # Web UI 模拟模式（无需 API key）
 python -m agent --version                         # 版本
 python -m agent --tools                           # 列出全部工具
 ```
+
+## Web UI
+
+本地网页界面（浏览器渲染事件流，SSE 实时推送）：
+
+- 对话流：模型回复流式显示，工具调用卡片可展开查看参数与结果
+- 命令输出实时滚动；上下文管理（裁剪/压缩）透明可见
+- 侧栏：工作区文件浏览、会话列表（点击恢复历史）、工具清单
+- 审批弹窗：`--permission ask` / `--plan` 模式下在浏览器内批准/拒绝
+- 中断按钮：随时停止当前任务
+
+实现零额外依赖：后端为标准库 `http.server` + SSE，前端为纯 HTML/CSS/JS。
 
 工作区记忆：`.agent-memory.md`（不入库）记录跨会话约定，会话开始自动注入上下文；agent 会在任务中更新它。
 

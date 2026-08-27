@@ -76,15 +76,25 @@
 
 ### 3.2 事件流驱动（核心架构决策）
 
-主循环**不直接碰 UI**，而是产生统一事件流；CLI 渲染器只是事件的订阅者：
+主循环**不直接碰 UI**，而是产生统一事件流；CLI 渲染器 / Web UI 只是事件的订阅者：
 
 ```
-事件:  text_delta │ tool_call │ tool_result │ error │ finish │ ask_permission
+事件:  text_delta │ tool_call │ tool_result │ error │ finish │ ask_permission │ command_output
 ```
 
-- 核心与 UI 完全解耦：将来加 Web UI 只换 renderer，主循环零改动
+- 核心与 UI 完全解耦：CLI 是终端渲染器，Web UI 是浏览器渲染器（SSE 推送），主循环零改动
 - 事件流同时写入 JSONL 会话日志（session.py），天然支持回放与调试
 - 设计要点："agent 是事件驱动的，UI 只是订阅者"
+
+### 3.2.1 Web UI（`agent/web.py` + `agent/web_ui/`）
+
+本地网页界面，浏览器作为渲染器（零额外依赖：后端 `http.server` + SSE，前端纯 HTML/CSS/JS）：
+
+- `python -m agent --web [--port N]` 启动；`GET /api/events` 为 SSE 事件流长连接
+- `POST /api/run` 提交任务（工作线程运行，事件广播到所有订阅客户端）
+- 审批（plan/ask 模式）通过浏览器弹窗 `POST /api/confirm` 回传；`POST /api/interrupt` 在步骤边界中断
+- `GET /api/files` 工作区文件浏览、`GET /api/sessions` + `POST /api/resume` 会话恢复
+- 前端：对话流（流式回复、可展开工具卡片、实时命令输出）、侧栏（文件/会话/工具）、深色主题
 
 ### 3.3 目录结构
 
@@ -260,6 +270,7 @@ python -m agent "任务描述"               # 一次性模式（演示/自动�
 | D6 | 缓冲：真实任务演练、修 bug、文档打磨 | 全流程彩排 |
 | 增强 | git 工具集、glob、会话恢复 --resume、审批模式 --permission ask、命令实时输出、usage 统计与 REPL 斜杠命令、参数类型校验 | ✅ 完成：29 项测试全绿，真实 API 验证 git/glob/恢复/流式输出 |
 | 增强2 | undo 编辑备份、规划模式 --plan（计划轮仅只读工具，批准后执行）、工作区记忆 .agent-memory.md | ✅ 完成：32 项测试全绿，真实 API 验证 undo/plan/记忆注入 |
+| 增强3 | Web UI（SSE 事件流 + 浏览器渲染器）、Web 端审批与中断 | ✅ 完成：33 项测试全绿，冒烟验证页面/接口/运行链路 |
 
 ---
 

@@ -24,7 +24,7 @@ class AgentLoop:
     KEEP_RECENT_ROUNDS = 2  # 预算管理时保留的最近工具调用轮数
 
     def __init__(self, llm, ctx: Context, tool_ctx: ToolContext, max_steps: int = 30,
-                 on_event=None, confirm=None, plan_mode: bool = False):
+                 on_event=None, confirm=None, plan_mode: bool = False, interrupt_event=None):
         self.llm = llm
         self.ctx = ctx
         self.tool_ctx = tool_ctx
@@ -32,8 +32,17 @@ class AgentLoop:
         self.on_event = on_event
         self.confirm = confirm  # 可选：Callable[[tool_name, args_desc], bool]，审批模式回调
         self.plan_mode = plan_mode  # 先计划后行动：第一轮后展示计划征求批准
+        self.interrupt_event = interrupt_event  # 可选：threading.Event，Web UI 中断用
         self._plan_approved = False
         self.tool_ctx.on_output = lambda text: self._emit(CommandOutput(text))
+
+    def _interrupted(self, step: int):
+        """中断检查：Web UI 请求中断时在步骤边界生效。"""
+        if self.interrupt_event is not None and self.interrupt_event.is_set():
+            self._emit(ErrorEvent("执行被用户中断"))
+            return {"status": "interrupted", "message": "用户中断",
+                    "steps": step, "usage": dict(self.ctx.real_usage)}
+        return None
 
     def _emit(self, ev) -> None:
         if self.on_event:
@@ -87,6 +96,9 @@ class AgentLoop:
         text_only_streak = 0
 
         for step in range(1, self.max_steps + 1):
+            r = self._interrupted(step)
+            if r:
+                return r
             self._emit(StepEvent(step, self.max_steps))
             self._maybe_hint_finish(step)
             self._manage_context()
@@ -180,6 +192,9 @@ class AgentLoop:
                 result = dispatch(a.name, a.arguments, self.tool_ctx)
                 self._emit(ToolResultEvent(a.call_id, a.name, result["ok"], result["output"]))
                 self._append_tool_result(a, result, text_protocol)
+                r = self._interrupted(step)
+                if r:
+                    return r
 
             # 规划模式：第一轮后暂停，展示计划并征求用户批准
             if self.plan_mode and step == 1 and not self._plan_approved:

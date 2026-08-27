@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Coding Agent</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<aside id="sidebar">
+  <div id="brand">Coding Agent</div>
+  <h2>工作区</h2>
+  <div id="files"></div>
+  <h2>会话（点击恢复）</h2>
+  <div id="sessions"></div>
+  <h2>工具</h2>
+  <div id="tools"></div>
+</aside>
+<main>
+  <header id="topbar">
+    <span id="status-dot"></span>
+    <span id="status-text">空闲</span>
+    <button id="btn-interrupt" disabled>中断</button>
+  </header>
+  <div id="chat"></div>
+  <footer>
+    <textarea id="input" rows="3"
+      placeholder="输入任务，Enter 发送，Shift+Enter 换行"></textarea>
+    <button id="btn-run">运行</button>
+  </footer>
+</main>
+<div id="confirm-modal" class="hidden">
+  <div id="confirm-box">
+    <h3 id="confirm-title"></h3>
+    <pre id="confirm-desc"></pre>
+    <div id="confirm-actions">
+      <button id="btn-approve">批准</button>
+      <button id="btn-reject" class="danger">拒绝</button>
+    </div>
+  </div>
+</div>
+<script src="/app.js"></script>
+</body>
+</html>
