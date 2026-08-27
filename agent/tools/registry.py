@@ -9,10 +9,11 @@ TOOLS: dict = {}
 
 
 class ToolContext:
-    """工具执行上下文：工作区根目录等。"""
+    """工具执行上下文：工作区根目录、实时输出回调等。"""
 
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, on_output=None):
         self.workspace = workspace.resolve()
+        self.on_output = on_output  # 可选：Callable[[str], None]，命令实时输出回调
 
 
 class ToolRejected(Exception):

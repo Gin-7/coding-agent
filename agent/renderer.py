@@ -7,8 +7,8 @@ import json
 import os
 import sys
 
-from .events import (CompactedEvent, ErrorEvent, FinishEvent, StepEvent, TextDelta,
-                     ToolCallEvent, ToolResultEvent, TrimmedEvent)
+from .events import (CommandOutput, CompactedEvent, ErrorEvent, FinishEvent, StepEvent,
+                     TextDelta, ToolCallEvent, ToolResultEvent, TrimmedEvent)
 
 if os.name == "nt":
     os.system("")  # 启用 Windows 终端 VT 转义（ANSI 颜色）
@@ -37,6 +37,8 @@ class CliRenderer:
             shown = ev.output if len(ev.output) <= 200 else ev.output[:200] + "…"
             mark = "✓" if ev.ok else "✗"
             print(_c("90", f"    ↳ [{mark}] {shown}"))
+        elif isinstance(ev, CommandOutput):
+            print(_c("90", ev.text), end="", flush=True)
         elif isinstance(ev, ErrorEvent):
             print(_c("31", f"\n⚠ {ev.message}"))
         elif isinstance(ev, FinishEvent):

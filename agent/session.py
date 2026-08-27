@@ -1,6 +1,6 @@
 """会话持久化：JSONL 全量事件日志。
 
-用途：回放调试、回归测试输入、演示 agent 执行全过程。
+用途：回放调试、回归测试输入、演示 agent 执行全过程；--resume 从日志恢复对话继续干活。
 事件流与渲染共用同一数据源（事件驱动架构的副产品）。
 """
 import json
@@ -27,3 +27,25 @@ class Session:
 
     def __exit__(self, *exc):
         self.close()
+
+
+def load_messages(path: Path):
+    """从会话 JSONL 读取最后一次 MessagesDump 的消息历史（--resume 用）。"""
+    messages = None
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if obj.get("type") == "MessagesDump" and obj.get("messages"):
+            messages = obj["messages"]
+    return messages
+
+
+def latest_session(root: Path):
+    """工作区 sessions 目录下最新**含可恢复历史**的会话文件（--resume 省略路径时用）。"""
+    files = sorted(root.glob("session-*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for f in files:
+        if load_messages(f):
+            return f
+    return files[0] if files else None

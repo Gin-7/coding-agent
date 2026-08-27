@@ -8,6 +8,7 @@ from .registry import register
 
 MAX_LIST_ENTRIES = 200
 MAX_SEARCH_MATCHES = 100
+MAX_GLOB_RESULTS = 200
 SEARCH_SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules", "sessions",
                     ".test-tmp", ".idea", ".vscode"}
 SEARCH_SKIP_FILES = {".env", ".gitignore"}
@@ -88,6 +89,33 @@ def tool_search(tool_ctx, pattern: str, path: str = ".", regex: bool = False) ->
     return "\n".join([head] + results)
 
 
+def tool_glob(tool_ctx, pattern: str, path: str = ".") -> str:
+    """按 glob 模式在工作区内找文件（支持 ** 递归）。"""
+    if not pattern:
+        return "pattern 不能为空"
+    root = resolve_workspace_path(tool_ctx.workspace, path or ".")
+    if not root.is_dir():
+        return f"目录不存在: {path}"
+    matches = []
+    try:
+        for p in root.glob(pattern):
+            if not p.is_file():
+                continue
+            rel = str(p.relative_to(root)).replace("\\", "/")
+            if any(seg in SEARCH_SKIP_DIRS for seg in rel.split("/")):
+                continue
+            matches.append(rel)
+    except Exception as e:
+        return f"glob 模式解析失败: {e}"
+    matches.sort()
+    if not matches:
+        return f"未找到匹配 {pattern}"
+    head = f"找到 {len(matches)} 个匹配"
+    if len(matches) > MAX_GLOB_RESULTS:
+        head += f"，仅显示前 {MAX_GLOB_RESULTS} 个"
+    return "\n".join([head] + matches[:MAX_GLOB_RESULTS])
+
+
 def register_search_tools() -> None:
     register(
         "list_dir",
@@ -126,4 +154,23 @@ def register_search_tools() -> None:
             },
         },
         tool_search,
+    )
+    register(
+        "glob",
+        {
+            "type": "function",
+            "function": {
+                "name": "glob",
+                "description": "按 glob 模式在工作区内查找文件（支持 ** 递归，如 '**/*.py'、'tests/*.txt'）。返回匹配的相对路径列表。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "pattern": {"type": "string", "description": "glob 模式（相对工作区根目录）"},
+                        "path": {"type": "string", "description": "查找起始目录（相对工作区根目录，默认工作区根目录）"},
+                    },
+                    "required": ["pattern"],
+                },
+            },
+        },
+        tool_glob,
     )

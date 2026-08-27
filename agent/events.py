@@ -40,6 +40,12 @@ class ToolResultEvent:
 
 
 @dataclass
+class CommandOutput:
+    """命令执行的实时输出增量（流式显示，最终结果仍由 ToolResultEvent 汇总）。"""
+    text: str
+
+
+@dataclass
 class StepEvent:
     """迭代进度。"""
     step: int

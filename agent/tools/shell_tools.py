@@ -4,9 +4,11 @@ Windows 关键点：
 - shell=True 走 cmd.exe
 - CREATE_NEW_PROCESS_GROUP + taskkill /T /F 保证超时能杀掉整棵进程树
 - 输出按 UTF-8 → GBK fallback 解码，避免中文乱码
+- 注册 on_output 回调时启用读线程，实现实时输出（最终结果仍截断回传）
 """
 import re
 import subprocess
+import threading
 from typing import Optional
 
 from .paths import resolve_workspace_path
@@ -42,6 +44,16 @@ def _check_blacklist(command: str) -> Optional[str]:
     return None
 
 
+def _kill_tree(proc) -> None:
+    try:
+        subprocess.run(
+            ["taskkill", "/pid", str(proc.pid), "/T", "/F"],
+            capture_output=True, timeout=10,
+        )
+    except Exception:
+        pass
+
+
 def tool_run_command(tool_ctx, command: str, timeout: int = DEFAULT_TIMEOUT, workdir: str = None) -> str:
     command = (command or "").strip()
     if not command:
@@ -65,21 +77,49 @@ def tool_run_command(tool_ctx, command: str, timeout: int = DEFAULT_TIMEOUT, wor
         )
     except Exception as e:
         raise ToolRejected(f"启动命令失败: {e}")
-    try:
-        out_bytes, _ = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
+
+    # 实时输出模式：读线程逐行解码并回调（UTF-8/GBK 多字节字符不会跨 \n 拆断）
+    if getattr(tool_ctx, "on_output", None):
+        chunks: list = []
+
+        def _reader():
+            while True:
+                line = proc.stdout.readline()
+                if not line:
+                    break
+                chunk = _decode(line)
+                chunks.append(chunk)
+                try:
+                    tool_ctx.on_output(chunk)
+                except Exception:
+                    pass
+
+        t = threading.Thread(target=_reader, daemon=True)
+        t.start()
+        t.join(timeout=timeout)
+        if t.is_alive():
+            _kill_tree(proc)
+            t.join(timeout=5)
+            raise ToolRejected(f"命令超时（>{timeout}s），进程树已终止")
+        proc.wait()
+        text = "".join(chunks)
         try:
-            subprocess.run(
-                ["taskkill", "/pid", str(proc.pid), "/T", "/F"],
-                capture_output=True, timeout=10,
-            )
+            proc.stdout.close()
         except Exception:
             pass
-        raise ToolRejected(f"命令超时（>{timeout}s），进程树已终止")
-    text = _decode(out_bytes or b"")
+        code = proc.returncode
+    else:
+        try:
+            out_bytes, _ = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _kill_tree(proc)
+            raise ToolRejected(f"命令超时（>{timeout}s），进程树已终止")
+        text = _decode(out_bytes or b"")
+        code = proc.returncode
+
     truncated = len(text) > MAX_OUTPUT_CHARS
     shown = text[:MAX_OUTPUT_CHARS]
-    return f"退出码 {proc.returncode}；输出 {len(text)} 字符{'（已截断）' if truncated else ''}\n{shown}"
+    return f"退出码 {code}；输出 {len(text)} 字符{'（已截断）' if truncated else ''}\n{shown}"
 
 
 def register_shell_tools() -> None:

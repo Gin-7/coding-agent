@@ -1,8 +1,13 @@
-"""CLI 双入口：交互式 REPL / 一次性任务（--task）。"""
+"""CLI 双入口：交互式 REPL / 一次性任务（--task）。
+
+支持 --resume 会话恢复、--permission 审批模式、--mock 演示、--tools 工具列表等。
+"""
 import argparse
 import os
 import sys
 from pathlib import Path
+
+from . import __version__
 
 BANNER = r"""
    ___          _             _   _
@@ -25,10 +30,25 @@ def _parse_args(argv):
     p.add_argument("--max-steps", type=int, default=None, help="最大迭代步数")
     p.add_argument("--budget", type=int, default=None, help="上下文 token 预算（覆盖 AGENT_MAX_CONTEXT_TOKENS）")
     p.add_argument("--tools", action="store_true", help="列出已注册的工具并退出")
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
+    p.add_argument("--resume", action="store_true",
+                   help="从最近一次会话恢复历史继续（续接上一轮对话）")
+    p.add_argument("--resume-file", default=None, metavar="PATH",
+                   help="从指定会话 JSONL 文件恢复历史继续")
+    p.add_argument("--permission", choices=("auto", "ask"), default="auto",
+                   help="执行权限：auto 自动执行（危险命令黑名单拦截）；ask 每个命令/提交需确认（默认 auto）")
     return p.parse_args(argv)
 
 
-def _build_real(workspace: Path, args, on_event):
+def _confirm_interactive(name: str, desc: str) -> bool:
+    try:
+        ans = input(f"允许执行 {name} {desc}？[y/N] ").strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return False
+    return ans in ("y", "yes", "是")
+
+
+def _build_real(workspace: Path, args, on_event, confirm):
     from .config import Config
     from .context import Context
     from .llm import LLMClient
@@ -49,10 +69,11 @@ def _build_real(workspace: Path, args, on_event):
         temperature=cfg.temperature, max_tokens=cfg.max_tokens, timeout=cfg.timeout,
     )
     ctx = Context(make_system_prompt(cfg.workspace), cfg.max_context_tokens)
-    return AgentLoop(llm, ctx, ToolContext(cfg.workspace), max_steps=cfg.max_steps, on_event=on_event)
+    return AgentLoop(llm, ctx, ToolContext(cfg.workspace), max_steps=cfg.max_steps,
+                     on_event=on_event, confirm=confirm)
 
 
-def _build_mock(workspace: Path, max_steps, budget, on_event):
+def _build_mock(workspace: Path, max_steps, budget, on_event, confirm):
     from .context import Context
     from .loop import AgentLoop
     from .mock import MockLLM
@@ -61,7 +82,8 @@ def _build_mock(workspace: Path, max_steps, budget, on_event):
 
     register_all()
     ctx = Context(make_system_prompt(workspace), budget or 56000)
-    return AgentLoop(MockLLM(), ctx, ToolContext(workspace), max_steps=max_steps or 30, on_event=on_event)
+    return AgentLoop(MockLLM(), ctx, ToolContext(workspace), max_steps=max_steps or 30,
+                     on_event=on_event, confirm=confirm)
 
 
 def _show_status(result: dict) -> None:
@@ -74,11 +96,35 @@ def _show_status(result: dict) -> None:
         print(f"\n[中止] {result.get('message')}")
     elif s == "error":
         print(f"\n[错误] {result.get('message')}")
+    if result.get("steps") is not None:
+        u = result.get("usage") or {}
+        print(f"[统计] 步骤 {result['steps']} | 本轮输入 {u.get('prompt', 0)} / 输出 {u.get('completion', 0)} tokens")
 
 
-def _repl(loop, renderer, log_result) -> None:
+def _handle_slash(loop, cmd: str) -> None:
+    c = cmd.strip().lower()
+    if c == "/stats":
+        u = loop.ctx.real_usage
+        print(f"[统计] 历史消息 {len(loop.ctx.messages)} 条 | 预估 {loop.ctx.estimated_tokens()} tokens | "
+              f"累计输入 {u['prompt']} / 输出 {u['completion']} tokens")
+    elif c == "/tools":
+        from .tools import TOOLS
+        for name in sorted(TOOLS):
+            desc = TOOLS[name]["schema"]["function"]["description"]
+            print(f"  {name}: {desc[:60]}")
+    elif c == "/clear":
+        n = len(loop.ctx.messages) - 1
+        loop.ctx.messages = loop.ctx.messages[:1]
+        print(f"[已清空] 丢弃 {n} 条历史消息")
+    elif c in ("/help", "/h"):
+        print("命令：/stats 统计 | /tools 工具列表 | /clear 清空历史 | /exit 退出 | 其余输入视为任务")
+    else:
+        print(f"未知命令: {cmd}（/help 查看）")
+
+
+def _repl(loop, renderer, log_turn) -> None:
     print(BANNER)
-    print("输入任务，agent 将自主完成；输入 exit/quit 退出。\n")
+    print("输入任务，agent 将自主完成；/help 查看命令；exit 退出。\n")
     while True:
         try:
             task = input("你> ").strip()
@@ -88,11 +134,14 @@ def _repl(loop, renderer, log_result) -> None:
         if not task:
             continue
         low = task.lower()
-        if low in ("exit", "quit", "退出"):
+        if low in ("exit", "quit", "退出", "/exit"):
             break
+        if task.startswith("/"):
+            _handle_slash(loop, task)
+            continue
         try:
             result = loop.run(task)
-            log_result(result)
+            log_turn(result)
             _show_status(result)
         except KeyboardInterrupt:
             print("\n[已中断] 可继续输入新任务，或 exit 退出")
@@ -118,30 +167,51 @@ def main(argv=None) -> int:
     from .session import Session
 
     renderer = CliRenderer()
+    confirm = _confirm_interactive if args.permission == "ask" else None
+
     with Session(workspace / "sessions") as session:
         def on_event(ev):
             renderer.emit(ev)
             session.log(event_to_dict(ev))
 
-        def log_result(result: dict):
-            session.log({"type": "RunResult", "status": result.get("status"),
-                         "message": result.get("message") or result.get("summary")})
-
         if args.mock:
-            loop = _build_mock(workspace, args.max_steps, args.budget, on_event)
+            loop = _build_mock(workspace, args.max_steps, args.budget, on_event, confirm)
         else:
-            loop = _build_real(workspace, args, on_event)
+            loop = _build_real(workspace, args, on_event, confirm)
+
+        # 会话恢复：从历史 JSONL 载入消息
+        if args.resume or args.resume_file:
+            from .session import latest_session, load_messages
+            from .prompts import make_system_prompt
+            resume_path = Path(args.resume_file) if args.resume_file else latest_session(workspace / "sessions")
+            if not resume_path or not resume_path.exists():
+                print(f"未找到可恢复的会话: {args.resume_file or '(最近一次)'}")
+                return 1
+            msgs = load_messages(resume_path)
+            if msgs:
+                if msgs[0].get("role") == "system":
+                    msgs[0]["content"] = make_system_prompt(workspace)
+                loop.ctx.messages = msgs
+                print(f"[已恢复会话] {resume_path.name}（{len(msgs)} 条历史消息）")
+            else:
+                print(f"[警告] 会话中没有可恢复的历史: {resume_path.name}")
+
+        def log_turn(result: dict):
+            session.log({"type": "RunResult", "status": result.get("status"),
+                         "message": result.get("message") or result.get("summary"),
+                         "steps": result.get("steps")})
+            session.log({"type": "MessagesDump", "messages": loop.ctx.messages})
 
         if args.task:
             try:
                 result = loop.run(args.task)
-                log_result(result)
+                log_turn(result)
                 _show_status(result)
             except KeyboardInterrupt:
                 print("\n[已中断]")
                 return 130
         else:
-            _repl(loop, renderer, log_result)
+            _repl(loop, renderer, log_turn)
     return 0
 
 

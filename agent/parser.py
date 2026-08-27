@@ -30,6 +30,24 @@ def _validate(name: str, args: dict, registry: dict) -> None:
     for req in schema.get("required", []):
         if req not in args or args[req] is None:
             raise ParseError(f"工具 {name} 缺少必需参数: {req}")
+    # 类型校验：按 schema 声明的类型检查每个参数（bool 是 int 子类，需先判 bool）
+    props = schema.get("properties", {})
+    for k, v in args.items():
+        t = (props.get(k) or {}).get("type")
+        if not t:
+            continue  # 未声明类型的参数宽容处理
+        if t == "string":
+            if not isinstance(v, str):
+                raise ParseError(f"工具 {name} 参数 {k} 应为 string，得到 {type(v).__name__}")
+        elif t == "boolean":
+            if not isinstance(v, bool):
+                raise ParseError(f"工具 {name} 参数 {k} 应为 boolean，得到 {type(v).__name__}")
+        elif t == "integer":
+            if isinstance(v, bool) or not isinstance(v, int):
+                raise ParseError(f"工具 {name} 参数 {k} 应为 integer，得到 {type(v).__name__}")
+        elif t == "number":
+            if isinstance(v, bool) or not isinstance(v, (int, float)):
+                raise ParseError(f"工具 {name} 参数 {k} 应为 number，得到 {type(v).__name__}")
 
 
 def parse_tool_calls(raw_tool_calls: list, registry: dict) -> List[ToolCall]:

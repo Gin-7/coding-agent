@@ -158,8 +158,11 @@ coding-agent/
 | `write_file` | 全覆盖写，UTF-8 显式编码 | `path`, `content` |
 | `edit_file` | 精确搜索-替换（省 token，改大文件） | `path`, `old`, `new` |
 | `list_dir` | 目录/文件浏览 | `path` |
-| `search` | 文本/正则搜索 | `pattern`, `path` |
+| `search` | 文本/正则搜索 | `pattern`, `path`, `regex?` |
+| `glob` | 按 glob 模式找文件（`**` 递归） | `pattern`, `path?` |
 | `run_command` | subprocess 执行 cmd，带超时 | `command`, `timeout?`, `workdir?` |
+| `git_status` / `git_diff` | 查看工作区改动 | `path?`, `staged?` |
+| `git_commit` / `git_log` | 提交 / 查看提交历史 | `message` / `n?` |
 | `finish` | 完成任务标记（携带总结） | `summary` |
 
 **本地执行原则**：
@@ -254,6 +257,7 @@ python -m agent "任务描述"               # 一次性模式（演示/自动�
 | D4 | compaction + 文本协议兜底（特色功能） | ✅ 完成：compaction（分块压缩+合并）实测触发并正常收尾；三层策略 compaction → 裁剪 → 硬截断；文本协议兜底 D1 已就位 |
 | D5 | 测试（parser / context / tools）+ 使用文档 + 演示准备 | 全流程稳定可用，演示素材齐备 |
 | D6 | 缓冲：真实任务演练、修 bug、文档打磨 | 全流程彩排 |
+| 增强 | git 工具集、glob、会话恢复 --resume、审批模式 --permission ask、命令实时输出、usage 统计与 REPL 斜杠命令、参数类型校验 | ✅ 完成：29 项测试全绿，真实 API 验证 git/glob/恢复/流式输出 |
 
 ---
 

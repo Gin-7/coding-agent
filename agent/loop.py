@@ -7,22 +7,28 @@ import json
 
 from .compaction import compact_history
 from .context import Context
-from .events import (CompactedEvent, ErrorEvent, FinishEvent, StepEvent, TextDelta,
-                     ToolCallEvent, ToolResultEvent, TrimmedEvent)
+from .events import (CommandOutput, CompactedEvent, ErrorEvent, FinishEvent, StepEvent,
+                     TextDelta, ToolCallEvent, ToolResultEvent, TrimmedEvent)
 from .llm import LLMError
 from .parser import ParseError, parse_tool_calls, parse_text_protocol
 from .tools import TOOLS, ToolContext, dispatch, tool_schemas
+
+# 需要用户确认（审批模式）的工具
+GUARDED_TOOLS = ("run_command", "git_commit")
 
 
 class AgentLoop:
     KEEP_RECENT_ROUNDS = 2  # 预算管理时保留的最近工具调用轮数
 
-    def __init__(self, llm, ctx: Context, tool_ctx: ToolContext, max_steps: int = 30, on_event=None):
+    def __init__(self, llm, ctx: Context, tool_ctx: ToolContext, max_steps: int = 30,
+                 on_event=None, confirm=None):
         self.llm = llm
         self.ctx = ctx
         self.tool_ctx = tool_ctx
         self.max_steps = max_steps
         self.on_event = on_event
+        self.confirm = confirm  # 可选：Callable[[tool_name, args_desc], bool]，审批模式回调
+        self.tool_ctx.on_output = lambda text: self._emit(CommandOutput(text))
 
     def _emit(self, ev) -> None:
         if self.on_event:
@@ -142,10 +148,18 @@ class AgentLoop:
                     self._append_tool_result(a, result, text_protocol)
                     summary = a.arguments.get("summary", "任务完成")
                     self._emit(FinishEvent(summary))
-                    return {"status": "finished", "summary": summary}
+                    return {"status": "finished", "summary": summary,
+                            "steps": step, "usage": dict(self.ctx.real_usage)}
+                if self.confirm and a.name in GUARDED_TOOLS:
+                    desc = json.dumps(a.arguments, ensure_ascii=False)
+                    if not self.confirm(a.name, desc):
+                        result = {"ok": False, "output": f"用户拒绝了该操作（{a.name}）"}
+                        self._emit(ToolResultEvent(a.call_id, a.name, False, result["output"]))
+                        self._append_tool_result(a, result, text_protocol)
+                        continue
                 result = dispatch(a.name, a.arguments, self.tool_ctx)
                 self._emit(ToolResultEvent(a.call_id, a.name, result["ok"], result["output"]))
                 self._append_tool_result(a, result, text_protocol)
 
         self._emit(ErrorEvent(f"达到最大步数 {self.max_steps}，任务中止"))
-        return {"status": "timeout", "message": f"达到最大步数 {self.max_steps}"}
+        return {"status": "timeout", "message": f"达到最大步数 {self.max_steps}", "steps": self.max_steps}

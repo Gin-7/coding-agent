@@ -368,6 +368,94 @@ def test_compaction_small_region_skipped(tmp):
     assert len(stub.calls) == 0
 
 
+def test_parse_tool_calls_type_error(tmp):
+    from agent.parser import ParseError, parse_tool_calls
+    from agent.tools import register_all, TOOLS
+    register_all()
+    try:
+        parse_tool_calls([{"id": "c1", "name": "run_command",
+                           "arguments": json.dumps({"command": 123})}], TOOLS)
+        raise AssertionError("应抛出 ParseError")
+    except ParseError as e:
+        assert "string" in str(e)
+
+
+def test_glob_tool(tmp):
+    from agent.tools import ToolContext, dispatch, register_all
+    register_all()
+    ws = _ws(tmp, "glob")
+    (ws / "one.py").write_text("x", encoding="utf-8")
+    (ws / "sub").mkdir()
+    (ws / "sub" / "two.py").write_text("y", encoding="utf-8")
+    (ws / "sub" / "note.txt").write_text("z", encoding="utf-8")
+    ctx = ToolContext(ws)
+    r = dispatch("glob", {"pattern": "**/*.py"}, ctx)
+    assert r["ok"] and "one.py" in r["output"] and "sub/two.py" in r["output"]
+    r = dispatch("glob", {"pattern": "**/*.txt"}, ctx)
+    assert r["ok"] and "sub/note.txt" in r["output"]
+
+
+def test_git_tools(tmp):
+    import subprocess
+    from agent.tools import ToolContext, dispatch, register_all
+    register_all()
+    ws = _ws(tmp, "git")
+    subprocess.run(["git", "init", "-q"], cwd=str(ws), check=True)
+    subprocess.run(["git", "config", "user.email", "t@t"], cwd=str(ws), check=True)
+    subprocess.run(["git", "config", "user.name", "t"], cwd=str(ws), check=True)
+    ctx = ToolContext(ws)
+    r = dispatch("git_status", {}, ctx)
+    assert r["ok"] and "No commits" in r["output"]
+    (ws / "a.txt").write_text("hi", encoding="utf-8")
+    r = dispatch("git_status", {}, ctx)
+    assert r["ok"] and "a.txt" in r["output"]
+    r = dispatch("git_commit", {"message": "init"}, ctx)
+    assert r["ok"] and "1 file changed" in r["output"]
+    r = dispatch("git_log", {"n": 5}, ctx)
+    assert r["ok"] and "init" in r["output"]
+
+
+def test_run_command_streaming(tmp):
+    from agent.tools import ToolContext, dispatch, register_all
+    register_all()
+    ws = _ws(tmp, "stream")
+    collected = []
+    ctx = ToolContext(ws, on_output=lambda text: collected.append(text))
+    r = dispatch("run_command", {"command": "echo stream-hello"}, ctx)
+    assert r["ok"] and "stream-hello" in r["output"]
+    assert any("stream-hello" in c for c in collected)
+
+
+def test_permission_deny(tmp):
+    from agent.context import Context
+    from agent.loop import AgentLoop
+    from agent.mock import MockLLM
+    from agent.prompts import make_system_prompt
+    from agent.tools import ToolContext, register_all
+    register_all()
+    ws = _ws(tmp, "perm")
+    loop = AgentLoop(MockLLM(), Context(make_system_prompt(str(ws)), 56000), ToolContext(ws),
+                     max_steps=10, on_event=None, confirm=lambda name, desc: False)
+    result = loop.run("演示任务")
+    # 用户拒绝 run_command 后，mock 未收到 python 输出 → 直接 finish
+    assert result["status"] == "finished"
+    denied = [m for m in loop.ctx.messages if "用户拒绝" in (m.get("content") or "")]
+    assert denied, "应存在被拒绝的工具结果"
+
+
+def test_resume_roundtrip(tmp):
+    from agent.session import Session, load_messages
+    ws = _ws(tmp, "resume")
+    msgs = [{"role": "system", "content": "sys"},
+            {"role": "user", "content": "task"},
+            {"role": "assistant", "content": "hi"},
+            {"role": "tool", "tool_call_id": "c1", "content": "out"}]
+    with Session(ws / "sessions") as s:
+        s.log({"type": "MessagesDump", "messages": msgs})
+    loaded = load_messages(list((ws / "sessions").glob("*.jsonl"))[0])
+    assert loaded == msgs
+
+
 def main() -> int:
     import shutil
     tmp = TMP_ROOT / "run"
