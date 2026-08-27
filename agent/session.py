@@ -9,9 +9,9 @@ from pathlib import Path
 
 
 class Session:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, filename: str = None):
         root.mkdir(parents=True, exist_ok=True)
-        self.path = root / f"session-{datetime.now().strftime('%Y%m%d-%H%M%S')}.jsonl"
+        self.path = root / filename if filename else root / f"session-{datetime.now().strftime('%Y%m%d-%H%M%S')}.jsonl"
         self._f = open(self.path, "a", encoding="utf-8")
 
     def log(self, event: dict) -> None:

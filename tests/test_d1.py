@@ -539,6 +539,16 @@ def test_web_server_endpoints(tmp):
         with urllib.request.urlopen(base + "/api/tools", timeout=10) as r:
             tools = _json.loads(r.read())
         assert "read_file" in tools and "git_commit" in tools
+        # 工作区与会话
+        with urllib.request.urlopen(base + "/api/workspace", timeout=10) as r:
+            meta = _json.loads(r.read())
+        assert meta["root"].replace("\\", "/").endswith("web") or "web" in meta["root"]
+        assert len(meta["sessions"]) >= 1 and meta["active"]
+        # 新建会话
+        req = urllib.request.Request(base + "/api/session/new", data=b"{}",
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert _json.loads(r.read())["ok"]
         # 先连 SSE（订阅事件流），再运行任务，确保不丢早期事件
         sse = urllib.request.urlopen(base + "/api/events", timeout=30)
         import time
@@ -563,6 +573,21 @@ def test_web_server_endpoints(tmp):
         assert "UserMessage" in types and "ToolCallEvent" in types and "RunResult" in types
         result = events[-1]
         assert result["status"] == "finished"
+        # 文件夹选择器：根路径浏览（列出盘符）
+        with urllib.request.urlopen(base + "/api/fs/browse", timeout=10) as r:
+            b = _json.loads(r.read())
+        assert b.get("isRoot") and len(b["entries"]) >= 1
+        # 工作区浏览一个具体目录
+        import urllib.parse as _parse
+        with urllib.request.urlopen(base + "/api/fs/browse?path=" + _parse.quote(str(ws)), timeout=10) as r:
+            b2 = _json.loads(r.read())
+        assert "entries" in b2
+        # 切换会话
+        req = urllib.request.Request(base + "/api/session/select", data=_json.dumps(
+            {"filename": meta["active"]}).encode("utf-8"),
+            headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert _json.loads(r.read())["ok"]
         # 文件列表
         with urllib.request.urlopen(base + "/api/files?path=.", timeout=10) as r:
             files = _json.loads(r.read())
@@ -570,7 +595,6 @@ def test_web_server_endpoints(tmp):
     finally:
         httpd.shutdown()
         httpd.server_close()
-        web.session.close()
 
 
 def main() -> int:
