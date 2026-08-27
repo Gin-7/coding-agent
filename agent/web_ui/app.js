@@ -9,6 +9,8 @@ const btnRun = document.getElementById("btn-run");
 let running = false;
 let lastAssistant = null;
 let lastCommandPre = null;
+let turn = null;             // 当前 agent 对话合并框
+let lastActiveRoot = "";     // 上次活动工作区（用于文件树随工作区切换）
 const toolCards = new Map();
 let fileDir = ".";
 let browseDir = "";
@@ -26,18 +28,34 @@ function scrollToBottom() {
   if (near) scrollEl.scrollTop = scrollEl.scrollHeight;
 }
 function showEmpty(show) { document.getElementById("empty").style.display = show ? "" : "none"; }
-function addBubble(cls, text) {
+function addBubble(cls, text, parent) {
   const b = document.createElement("div");
   b.className = "bubble " + cls;
   if (text !== undefined) b.textContent = text;
-  chatCol.appendChild(b); scrollToBottom();
+  (parent || chatCol).appendChild(b);
+  scrollToBottom();
   return b;
 }
-function addSystem(text, cls) {
+function addSystem(text, cls, parent) {
   const b = document.createElement("div");
   b.className = "note " + (cls || "");
   b.textContent = text;
-  chatCol.appendChild(b); scrollToBottom();
+  (parent || chatCol).appendChild(b);
+  scrollToBottom();
+}
+function makeTurn() {
+  const t = document.createElement("div");
+  t.className = "agent-turn";
+  chatCol.appendChild(t);
+  return t;
+}
+function updateChatHeader(name) {
+  document.getElementById("chat-session-name").textContent = name || "—";
+}
+function onWorkspaceChanged() {
+  lastActiveRoot = activeRoot;
+  fileDir = ".";
+  loadFiles();
 }
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
 function safeJson(o) { try { return JSON.stringify(o, null, 2); } catch (e) { return String(o); } }
@@ -49,11 +67,18 @@ function parentOf(p) { const i = p.lastIndexOf("/"); return i < 0 ? "." : p.slic
 function renderTranscript(msgs) {
   chatCol.innerHTML = "";
   showEmpty(!msgs || msgs.length === 0);
+  let turn = null;
   for (const m of msgs || []) {
     if (m.role === "system") continue;
-    if (m.role === "user") { addBubble("user", m.content); continue; }
+    if (m.role === "user") { addBubble("user", m.content); turn = makeTurn(); continue; }
     if (m.role === "assistant") {
-      if (m.content) addBubble("assistant", m.content);
+      if (!turn) turn = makeTurn();
+      if (m.content) {
+        const t = document.createElement("div");
+        t.className = "assistant-text";
+        t.textContent = m.content;
+        turn.appendChild(t);
+      }
       for (const tc of m.tool_calls || []) {
         const fn = tc.function || {};
         const card = document.createElement("div");
@@ -65,7 +90,7 @@ function renderTranscript(msgs) {
         argsPre.className = "tool-args";
         try { argsPre.textContent = safeJson(JSON.parse(fn.arguments || "{}")); } catch (e) { argsPre.textContent = fn.arguments || ""; }
         card.appendChild(head); card.appendChild(argsPre);
-        chatCol.appendChild(card);
+        turn.appendChild(card);
       }
       continue;
     }
@@ -73,7 +98,7 @@ function renderTranscript(msgs) {
       const note = document.createElement("div");
       note.className = "note";
       note.textContent = "↳ " + (m.content || "").slice(0, 120);
-      chatCol.appendChild(note);
+      (turn || chatCol).appendChild(note);
     }
   }
   scrollToBottom();
@@ -83,11 +108,18 @@ function renderTranscript(msgs) {
 function render(ev) {
   switch (ev.type) {
     case "UserMessage":
-      showEmpty(false); addBubble("user", ev.content);
+      showEmpty(false);
+      addBubble("user", ev.content);
+      turn = makeTurn();               // 每个 agent 对话合并为一个框
       lastAssistant = null; lastCommandPre = null;
       break;
     case "TextDelta":
-      if (!lastAssistant) { lastAssistant = addBubble("assistant", ""); lastAssistant.classList.add("running"); }
+      if (!lastAssistant) {
+        lastAssistant = document.createElement("div");
+        lastAssistant.className = "assistant-text";
+        lastAssistant.classList.add("running");
+        (turn || chatCol).appendChild(lastAssistant);
+      }
       lastAssistant.textContent += ev.text; scrollToBottom();
       break;
     case "ToolCallEvent": {
@@ -102,14 +134,14 @@ function render(ev) {
       resultDiv.className = "tool-result"; resultDiv.style.display = "none";
       head.addEventListener("click", () => card.classList.toggle("open"));
       card.appendChild(head); card.appendChild(argsPre); card.appendChild(resultDiv);
-      chatCol.appendChild(card); toolCards.set(ev.call_id, { card, resultDiv }); scrollToBottom();
+      (turn || chatCol).appendChild(card); toolCards.set(ev.call_id, { card, resultDiv }); scrollToBottom();
       break;
     }
     case "CommandOutput":
       if (!lastCommandPre) {
         lastCommandPre = document.createElement("pre");
         lastCommandPre.className = "cmd-output";
-        chatCol.appendChild(lastCommandPre);
+        (turn || chatCol).appendChild(lastCommandPre);
       }
       lastCommandPre.textContent += ev.text; scrollToBottom();
       break;
@@ -124,27 +156,27 @@ function render(ev) {
       lastCommandPre = null;
       break;
     }
-    case "StepEvent": addSystem("step " + ev.step + "/" + ev.max_steps, "step"); break;
-    case "TrimmedEvent": addSystem("[上下文] 预算紧张，已裁剪最老的 " + ev.rounds + " 轮工具调用"); break;
+    case "StepEvent": addSystem("step " + ev.step + "/" + ev.max_steps, "step", turn); break;
+    case "TrimmedEvent": addSystem("[上下文] 预算紧张，已裁剪最老的 " + ev.rounds + " 轮工具调用", "", turn); break;
     case "CompactedEvent":
       addSystem(ev.summarized ? "[上下文] 已把早期 " + ev.messages_removed + " 条消息压缩为摘要"
-                              : "[上下文] 已丢弃早期 " + ev.messages_removed + " 条消息");
+                              : "[上下文] 已丢弃早期 " + ev.messages_removed + " 条消息", "", turn);
       break;
-    case "ErrorEvent": addSystem("⚠ " + ev.message, "error"); break;
-    case "FinishEvent": addBubble("finish", "✅ " + ev.summary); break;
-    case "Notice": addSystem(ev.message); break;
+    case "ErrorEvent": addSystem("⚠ " + ev.message, "error", turn); break;
+    case "FinishEvent": addBubble("finish", "✅ " + ev.summary, turn); break;
+    case "Notice": addSystem(ev.message, "", turn); break;
     case "AskConfirm": showConfirm(ev.name, ev.desc); break;
     case "SessionsChanged": loadTree(); break;
     case "RunResult":
       setRunning(false);
       if (lastAssistant) lastAssistant.classList.remove("running");
-      if (ev.status === "finished") addSystem("[完成] " + (ev.summary || ""), "ok");
-      else if (ev.status !== "interrupted") addSystem("[" + ev.status + "] " + (ev.message || ""), "error");
+      if (ev.status === "finished") addSystem("[完成] " + (ev.summary || ""), "ok", turn);
+      else if (ev.status !== "interrupted") addSystem("[" + ev.status + "] " + (ev.message || ""), "error", turn);
       if (ev.steps != null) {
         const u = ev.usage || {};
-        addSystem("[统计] 步骤 " + ev.steps + " | 输入 " + (u.prompt || 0) + " / 输出 " + (u.completion || 0) + " tokens");
+        addSystem("[统计] 步骤 " + ev.steps + " | 输入 " + (u.prompt || 0) + " / 输出 " + (u.completion || 0) + " tokens", "", turn);
       }
-      lastAssistant = null; lastCommandPre = null;
+      lastAssistant = null; lastCommandPre = null; turn = null;
       loadTree(); loadFiles();
       break;
   }
@@ -195,12 +227,15 @@ async function loadTree() {
     }
     if (!dataLoadedOnce) {
       dataLoadedOnce = true;
-      if (activeRoot) {
-        const d = await getJSON("/api/workspace");
-        const m = d.active ? await getJSON("/api/session/messages?filename=" + encodeURIComponent(d.active)) : null;
-        renderTranscript(m ? m.messages : []);
-      }
+      const d = await getJSON("/api/workspace");
+      const m = d.active ? await getJSON("/api/session/messages?filename=" + encodeURIComponent(d.active)) : null;
+      renderTranscript(m ? m.messages : []);
     }
+    // 会话名头部 + 文件树随工作区切换
+    const aw = list.find(w => w.is_active);
+    const as = aw && (aw.sessions || []).find(s => s.filename === aw.active);
+    updateChatHeader(as ? as.name : "—");
+    if (activeRoot && activeRoot !== lastActiveRoot) { onWorkspaceChanged(); }
   } catch (e) { }
 }
 async function selectSession(root, filename) {
@@ -228,9 +263,10 @@ document.getElementById("btn-add-workspace").addEventListener("click", () => { b
 /* ---------- 设置弹窗 ---------- */
 const settingsEl = document.getElementById("settings");
 document.getElementById("btn-settings").addEventListener("click", () => settingsEl.classList.remove("hidden"));
-document.getElementById("btn-settings-close").addEventListener("click", () => settingsEl.classList.add("hidden"));
-document.querySelectorAll(".st").forEach(btn => btn.addEventListener("click", () => {
-  document.querySelectorAll(".st").forEach(b => b.classList.remove("active"));
+// 点击面板外部关闭
+settingsEl.addEventListener("click", e => { if (e.target === settingsEl) settingsEl.classList.add("hidden"); });
+document.querySelectorAll(".st[data-tab]").forEach(btn => btn.addEventListener("click", () => {
+  document.querySelectorAll(".st[data-tab]").forEach(b => b.classList.remove("active"));
   btn.classList.add("active");
   document.querySelectorAll(".stab").forEach(t => t.classList.remove("active"));
   document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
@@ -280,14 +316,13 @@ async function renderBrowse() {
   const d = await getJSON("/api/fs/browse?path=" + encodeURIComponent(browseDir));
   if (d.error) return;
   document.getElementById("browse-path").textContent = d.isRoot ? "计算机" : (d.path || "/");
-  // 仅当进入了一个真实文件夹（非盘符根 / 根）时才能选择
   const canChoose = !!browseDir && !/^[A-Za-z]:[\\/]?$/.test(browseDir.replace(/\\/g, "/"));
-  document.getElementById("btn-workspace-choose").disabled = !canChoose;
   document.getElementById("browse-hint").style.display = canChoose ? "none" : "";
   document.getElementById("browse-list").innerHTML = d.entries.map(e =>
     `<div class="browse-item" data-path="${esc(e.path)}">📁 ${esc(e.name)}</div>`).join("");
   document.querySelectorAll(".browse-item").forEach(x => x.addEventListener("click", () => { browseDir = x.dataset.path; renderBrowse(); }));
 }
+function isChoosableFolder(p) { return !!p && !/^[A-Za-z]:[\\/]?$/.test(p.replace(/\\/g, "/")); }
 document.getElementById("btn-browse-up").addEventListener("click", () => {
   if (!browseDir) return;
   const parts = browseDir.replace(/\\/g, "/").split("/").filter(Boolean);
@@ -295,13 +330,16 @@ document.getElementById("btn-browse-up").addEventListener("click", () => {
 });
 document.getElementById("btn-workspace-cancel").addEventListener("click", () => document.getElementById("workspace-modal").classList.add("hidden"));
 document.getElementById("btn-workspace-choose").addEventListener("click", async () => {
-  if (!browseDir) return;
+  if (!isChoosableFolder(browseDir)) {
+    document.getElementById("browse-hint").style.display = "";
+    return;
+  }
   const r = await fetch("/api/workspace", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: browseDir }) });
   const d = await r.json();
   if (d.ok) {
     document.getElementById("workspace-modal").classList.add("hidden");
-    fileDir = "."; dataLoadedOnce = false; activeRoot = browseDir;
-    renderTranscript([]); loadTree(); loadFiles();
+    dataLoadedOnce = false;
+    await loadTree();   // 自动刷新会话树、会话名头部、文件树（随工作区切换）
   } else { addSystem("⚠ " + (d.message || "切换工作区失败"), "error"); }
 });
 

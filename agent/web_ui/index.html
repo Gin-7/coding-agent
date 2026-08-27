@@ -24,6 +24,9 @@
   </aside>
 
   <main id="chat">
+    <div id="chat-header">
+      <span id="chat-session-name">—</span>
+    </div>
     <div id="chat-scroll">
       <div id="empty">
         <div class="logo">⌘</div>
@@ -50,7 +53,7 @@
   </aside>
 </div>
 
-<!-- 设置弹窗（居中，左侧菜单栏） -->
+<!-- 设置弹窗（居中，左侧菜单栏，固定大小，点击外部关闭） -->
 <div id="settings" class="modal hidden">
   <div class="settings-box">
     <div class="settings-menu">
@@ -58,7 +61,6 @@
       <button class="st active" data-tab="appearance">外观</button>
       <button class="st" data-tab="tools">工具</button>
       <button class="st" data-tab="about">关于</button>
-      <button id="btn-settings-close" class="st close">关闭</button>
     </div>
     <div class="settings-content">
       <div id="tab-appearance" class="stab active">
