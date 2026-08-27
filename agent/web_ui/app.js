@@ -9,6 +9,7 @@ const btnRun = document.getElementById("btn-run");
 let running = false;
 let lastAssistant = null;
 let lastCommandPre = null;
+let assistantRaw = "";
 let turn = null;             // 当前 agent 对话合并框
 let lastActiveRoot = "";     // 上次活动工作区（用于文件树随工作区切换）
 const toolCards = new Map();
@@ -84,44 +85,96 @@ function addIconNote(icon, text, cls, parent) {
   return b;
 }
 
+/* ---------- 轻量 markdown 渲染（零依赖） ---------- */
+function renderMarkdown(text) {
+  let s = esc(text);
+  // 代码块（优先，含内部换行）
+  const blocks = [];
+  s = s.replace(/```([\s\S]*?)```/g, (m, c) => { blocks.push(c); return "\u0000B" + (blocks.length - 1) + "\u0000"; });
+  // 行内代码
+  s = s.replace(/`([^`]+)`/g, "<code class=\"md-inline\">$1</code>");
+  // 标题
+  s = s.replace(/^### (.+)$/gm, "<h4>$1</h4>");
+  s = s.replace(/^## (.+)$/gm, "<h3>$1</h3>");
+  s = s.replace(/^# (.+)$/gm, "<h2>$1</h2>");
+  // 加粗 / 斜体
+  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+  // 链接
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+  // 列表
+  s = s.replace(/^[-*] (.+)$/gm, "<li>$1</li>");
+  s = s.replace(/^\d+\. (.+)$/gm, "<li>$1</li>");
+  s = s.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul class="md-ul">$1</ul>');
+  // 段落（按空行切分）
+  s = s.split(/\n{2,}/).map(seg => {
+    const t = seg.trim();
+    if (!t) return "";
+    if (t.startsWith("\u0000B") || t.indexOf("<li>") >= 0 || t.startsWith("<h")) return t;
+    return "<p>" + t.replace(/\n/g, "<br>") + "</p>";
+  }).join("");
+  // 还原代码块
+  s = s.replace(/\u0000B(\d+)\u0000/g, (m, i) => '<pre class="md-code">' + blocks[+i] + "</pre>");
+  return s;
+}
+function timeAgo(ms) {
+  if (!ms) return "";
+  const d = Date.now() - ms;
+  if (d < 60 * 1000) return "刚刚";
+  if (d < 3600 * 1000) return Math.floor(d / 60000) + " 分钟前";
+  if (d < 86400 * 1000) return Math.floor(d / 3600000) + " 小时前";
+  return Math.floor(d / 86400000) + " 天前";
+}
+function isInjectedUserMsg(m) {
+  if (m.role !== "user") return false;
+  const c = (m.content || "").trim();
+  return /^(【规划阶段】|（提示：|请继续：|计划已批准|用户拒绝|【早期对话摘要】|【工具执行结果】|【工作区记忆】|\[工作区记忆\])/.test(c);
+}
+
 /* ---------- 会话历史转写 ---------- */
 function renderTranscript(msgs) {
   chatCol.innerHTML = "";
-  showEmpty(!msgs || msgs.length === 0);
-  let turn = null;
+  let t = null, hasContent = false;
   for (const m of msgs || []) {
-    if (m.role === "system") continue;
-    if (m.role === "user") { addBubble("user", m.content); turn = makeTurn(); continue; }
+    if (m.role === "system" || isInjectedUserMsg(m)) continue;
+    if (m.role === "user") {
+      if (m.content !== undefined) addBubble("user", m.content);
+      t = makeTurn(); hasContent = true; continue;
+    }
     if (m.role === "assistant") {
-      if (!turn) turn = makeTurn();
+      if (!t) t = makeTurn();
       if (m.content) {
-        const t = document.createElement("div");
-        t.className = "assistant-text";
-        t.textContent = m.content;
-        turn.appendChild(t);
+        const el = document.createElement("div");
+        el.className = "assistant-text";
+        el.innerHTML = renderMarkdown(m.content);
+        t.appendChild(el);
       }
       for (const tc of m.tool_calls || []) {
         const fn = tc.function || {};
         const card = document.createElement("div");
-        card.className = "tool-card open";
+        card.className = "tool-card";
         const head = document.createElement("div");
         head.className = "tool-head";
         head.innerHTML = '<span class="caret">' + ICON.chevron + '</span><span class="tool-ic">' + ICON.wrench + '</span><span>' + esc(fn.name || "tool") + '</span>';
         const argsPre = document.createElement("pre");
         argsPre.className = "tool-args";
         try { argsPre.textContent = safeJson(JSON.parse(fn.arguments || "{}")); } catch (e) { argsPre.textContent = fn.arguments || ""; }
+        head.addEventListener("click", () => card.classList.toggle("open"));
         card.appendChild(head); card.appendChild(argsPre);
-        turn.appendChild(card);
+        t.appendChild(card);
       }
+      hasContent = true;
       continue;
     }
     if (m.role === "tool") {
       const note = document.createElement("div");
       note.className = "note";
       note.textContent = "↳ " + (m.content || "").slice(0, 120);
-      (turn || chatCol).appendChild(note);
+      (t || chatCol).appendChild(note);
+      hasContent = true;
     }
   }
+  showEmpty(!hasContent);
   scrollToBottom();
 }
 
@@ -137,11 +190,18 @@ function render(ev) {
     case "TextDelta":
       if (!lastAssistant) {
         lastAssistant = document.createElement("div");
-        lastAssistant.className = "assistant-text";
-        lastAssistant.classList.add("running");
+        lastAssistant.className = "assistant-text running";
         (turn || chatCol).appendChild(lastAssistant);
+        assistantRaw = "";
       }
-      lastAssistant.textContent += ev.text; scrollToBottom();
+      assistantRaw += ev.text;
+      lastAssistant.innerHTML = renderMarkdown(assistantRaw);
+      scrollToBottom();
+      break;
+    case "StepEvent":
+      // 每个步骤的文字独立成块，避免上一步工具调用上方显示下一步文字
+      lastAssistant = null; lastCommandPre = null;
+      addSystem("step " + ev.step + "/" + ev.max_steps, "step", turn);
       break;
     case "ToolCallEvent": {
       const card = document.createElement("div");
@@ -171,13 +231,11 @@ function render(ev) {
       if (t) {
         t.resultDiv.textContent = (ev.ok ? "✓ " : "✗ ") + ev.output;
         t.resultDiv.style.display = "";
-        t.card.classList.add("open");
         t.card.dataset.ok = ev.ok ? "ok" : "fail";
       }
       lastCommandPre = null;
       break;
     }
-    case "StepEvent": addSystem("step " + ev.step + "/" + ev.max_steps, "step", turn); break;
     case "TrimmedEvent": addSystem("[上下文] 预算紧张，已裁剪最老的 " + ev.rounds + " 轮工具调用", "", turn); break;
     case "CompactedEvent":
       addSystem(ev.summarized ? "[上下文] 已把早期 " + ev.messages_removed + " 条消息压缩为摘要"
@@ -203,10 +261,18 @@ function render(ev) {
         const u = ev.usage || {};
         addSystem("[统计] 步骤 " + ev.steps + " | 输入 " + (u.prompt || 0) + " / 输出 " + (u.completion || 0) + " tokens", "", turn);
       }
-      lastAssistant = null; lastCommandPre = null; turn = null;
+      lastAssistant = null; lastCommandPre = null; turn = null; assistantRaw = "";
+      updateLastActive();
       loadTree(); loadFiles();
       break;
   }
+}
+async function updateLastActive() {
+  try {
+    const meta = await getJSON("/api/workspace");
+    const s = (meta.sessions || []).find(x => x.filename === meta.active);
+    document.getElementById("chat-last-active").textContent = s && s.mtime ? timeAgo(s.mtime * 1000) : "";
+  } catch (e) { }
 }
 
 /* ---------- 侧边栏工作区 / 会话树 ---------- */
@@ -267,6 +333,7 @@ async function loadTree() {
     const aw = list.find(w => w.is_active);
     const as = aw && (aw.sessions || []).find(s => s.filename === aw.active);
     updateChatHeader(as ? as.name : "—");
+    document.getElementById("chat-last-active").textContent = as && as.mtime ? timeAgo(as.mtime * 1000) : "";
     if (activeRoot && activeRoot !== lastActiveRoot) { onWorkspaceChanged(); }
   } catch (e) { }
 }
