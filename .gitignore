@@ -18,6 +18,10 @@ sessions/
 # 测试临时目录
 .test-tmp/
 
+# 工作区记忆与编辑备份
+.agent-memory.md
+.agent-backups/
+
 # 编辑器
 .vscode/
 .idea/

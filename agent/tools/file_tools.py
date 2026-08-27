@@ -1,4 +1,29 @@
-"""文件工具：read_file / write_file / edit_file。"""
+"""文件工具：read_file / write_file / edit_file / undo_file。
+
+edit_file / write_file 修改已有文件前自动备份到 .agent-backups/，
+undo_file 从备份恢复最近一次修改（磁盘备份，跨会话可用）。
+"""
+import shutil
+from pathlib import Path
+
+from .paths import ensure_safe_file, resolve_workspace_path
+from .registry import register
+
+MAX_READ_LINES = 2000
+BACKUP_ROOT = ".agent-backups"
+
+
+def _backup(tool_ctx, p: Path) -> None:
+    """修改已有文件前备份：.agent-backups/<相对路径>.bak（只保留最新一份）。"""
+    try:
+        rel = p.relative_to(tool_ctx.workspace)
+    except ValueError:
+        return
+    if not p.exists() or not p.is_file():
+        return
+    dest = tool_ctx.workspace / BACKUP_ROOT / (str(rel).replace("\\", "/") + ".bak")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(p, dest)
 from pathlib import Path
 
 from .paths import ensure_safe_file, resolve_workspace_path
@@ -58,6 +83,7 @@ def tool_write_file(tool_ctx, path: str, content: str) -> str:
     ensure_safe_file(p, path)
     if p.exists() and p.is_dir():
         return f"目标是目录，无法写入: {path}"
+    _backup(tool_ctx, p)
     p.parent.mkdir(parents=True, exist_ok=True)
     with open(p, "w", encoding="utf-8", newline="\n") as f:
         f.write(content)
@@ -84,6 +110,7 @@ def tool_edit_file(tool_ctx, path: str, old: str, new: str) -> str:
     if count > 1:
         return f"old 文本在文件中出现 {count} 处，匹配不唯一：请提供更多上下文使匹配唯一"
     old_norm = old.replace("\r\n", "\n")
+    _backup(tool_ctx, p)
     new_text = text_lf.replace(old_norm, new, 1)
     if newline == "\r\n":
         new_text = new_text.replace("\n", "\r\n")  # 保留原文件的行尾风格
@@ -92,6 +119,22 @@ def tool_edit_file(tool_ctx, path: str, old: str, new: str) -> str:
     before = new_text[max(0, idx - 40):idx].replace("\n", "\\n")
     after = new_text[idx + len(new):idx + len(new) + 40].replace("\n", "\\n")
     return f"已修改 {path}（精确替换 1 处）\n...{before}[{new}]{after}..."
+
+
+def tool_undo_file(tool_ctx, path: str) -> str:
+    """从 .agent-backups 恢复该文件最近一次修改前的版本。"""
+    p = resolve_workspace_path(tool_ctx.workspace, path)
+    ensure_safe_file(p, path)
+    try:
+        rel = p.relative_to(tool_ctx.workspace)
+    except ValueError:
+        return f"路径越界: {path}"
+    bak = tool_ctx.workspace / BACKUP_ROOT / (str(rel).replace("\\", "/") + ".bak")
+    if not bak.exists():
+        return f"没有可撤销的备份: {path}"
+    shutil.copy2(bak, p)
+    bak.unlink()
+    return f"已撤销对 {path} 的最近一次修改（从备份恢复）"
 
 
 def register_file_tools() -> None:
@@ -153,4 +196,22 @@ def register_file_tools() -> None:
             },
         },
         tool_edit_file,
+    )
+    register(
+        "undo_file",
+        {
+            "type": "function",
+            "function": {
+                "name": "undo_file",
+                "description": "撤销对文件最近一次修改：从自动备份（.agent-backups/）恢复修改前的版本。write_file/edit_file 修改已有文件时会自动备份。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string", "description": "要恢复的文件路径（相对工作区根目录）"},
+                    },
+                    "required": ["path"],
+                },
+            },
+        },
+        tool_undo_file,
     )

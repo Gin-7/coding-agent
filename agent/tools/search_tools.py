@@ -10,7 +10,7 @@ MAX_LIST_ENTRIES = 200
 MAX_SEARCH_MATCHES = 100
 MAX_GLOB_RESULTS = 200
 SEARCH_SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules", "sessions",
-                    ".test-tmp", ".idea", ".vscode"}
+                    ".test-tmp", ".idea", ".vscode", ".agent-backups"}
 SEARCH_SKIP_FILES = {".env", ".gitignore"}
 
 

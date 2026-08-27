@@ -456,6 +456,57 @@ def test_resume_roundtrip(tmp):
     assert loaded == msgs
 
 
+def test_undo_file(tmp):
+    from agent.tools import ToolContext, dispatch, register_all
+    register_all()
+    ws = _ws(tmp, "undo")
+    ctx = ToolContext(ws)
+    r = dispatch("write_file", {"path": "u.txt", "content": "version 1\n"}, ctx)
+    assert r["ok"]
+    r = dispatch("edit_file", {"path": "u.txt", "old": "version 1", "new": "version 2"}, ctx)
+    assert r["ok"]
+    r = dispatch("read_file", {"path": "u.txt"}, ctx)
+    assert r["ok"] and "version 2" in r["output"]
+    # 撤销 → 回到 version 1
+    r = dispatch("undo_file", {"path": "u.txt"}, ctx)
+    assert r["ok"] and "已撤销" in r["output"]
+    r = dispatch("read_file", {"path": "u.txt"}, ctx)
+    assert r["ok"] and "version 1" in r["output"]
+    # 再撤销 → 没有备份了
+    r = dispatch("undo_file", {"path": "u.txt"}, ctx)
+    assert "没有可撤销" in r["output"]
+
+
+def test_plan_mode_approved(tmp):
+    from agent.context import Context
+    from agent.loop import AgentLoop
+    from agent.mock import MockLLM
+    from agent.prompts import make_system_prompt
+    from agent.tools import ToolContext, register_all
+    register_all()
+    ws = _ws(tmp, "plan_ok")
+    loop = AgentLoop(MockLLM(), Context(make_system_prompt(str(ws)), 56000), ToolContext(ws),
+                     max_steps=10, on_event=None, confirm=lambda name, desc: True, plan_mode=True)
+    result = loop.run("演示任务")
+    assert result["status"] == "finished"
+    contents = " ".join(m.get("content") or "" for m in loop.ctx.messages)
+    assert "计划已批准" in contents
+
+
+def test_plan_mode_rejected(tmp):
+    from agent.context import Context
+    from agent.loop import AgentLoop
+    from agent.mock import MockLLM
+    from agent.prompts import make_system_prompt
+    from agent.tools import ToolContext, register_all
+    register_all()
+    ws = _ws(tmp, "plan_no")
+    loop = AgentLoop(MockLLM(), Context(make_system_prompt(str(ws)), 56000), ToolContext(ws),
+                     max_steps=10, on_event=None, confirm=lambda name, desc: False, plan_mode=True)
+    result = loop.run("演示任务")
+    assert result["status"] == "cancelled"
+
+
 def main() -> int:
     import shutil
     tmp = TMP_ROOT / "run"

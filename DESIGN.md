@@ -157,6 +157,7 @@ coding-agent/
 | `read_file` | 读取文件，行号显示 | `path`, `offset?`, `limit?` |
 | `write_file` | 全覆盖写，UTF-8 显式编码 | `path`, `content` |
 | `edit_file` | 精确搜索-替换（省 token，改大文件） | `path`, `old`, `new` |
+| `undo_file` | 撤销最近一次修改（自动备份于 `.agent-backups/`） | `path` |
 | `list_dir` | 目录/文件浏览 | `path` |
 | `search` | 文本/正则搜索 | `pattern`, `path`, `regex?` |
 | `glob` | 按 glob 模式找文件（`**` 递归） | `pattern`, `path?` |
@@ -258,6 +259,7 @@ python -m agent "任务描述"               # 一次性模式（演示/自动�
 | D5 | 测试（parser / context / tools）+ 使用文档 + 演示准备 | 全流程稳定可用，演示素材齐备 |
 | D6 | 缓冲：真实任务演练、修 bug、文档打磨 | 全流程彩排 |
 | 增强 | git 工具集、glob、会话恢复 --resume、审批模式 --permission ask、命令实时输出、usage 统计与 REPL 斜杠命令、参数类型校验 | ✅ 完成：29 项测试全绿，真实 API 验证 git/glob/恢复/流式输出 |
+| 增强2 | undo 编辑备份、规划模式 --plan（计划轮仅只读工具，批准后执行）、工作区记忆 .agent-memory.md | ✅ 完成：32 项测试全绿，真实 API 验证 undo/plan/记忆注入 |
 
 ---
 

@@ -37,12 +37,19 @@ def _parse_args(argv):
                    help="从指定会话 JSONL 文件恢复历史继续")
     p.add_argument("--permission", choices=("auto", "ask"), default="auto",
                    help="执行权限：auto 自动执行（危险命令黑名单拦截）；ask 每个命令/提交需确认（默认 auto）")
+    p.add_argument("--plan", action="store_true",
+                   help="规划模式：先让 agent 制定计划并征求确认，批准后执行")
     return p.parse_args(argv)
 
 
 def _confirm_interactive(name: str, desc: str) -> bool:
+    if name == "plan":
+        print(f"\n[计划]\n{desc}\n")
+        prompt = "批准执行该计划？[y/N] "
+    else:
+        prompt = f"允许执行 {name} {desc}？[y/N] "
     try:
-        ans = input(f"允许执行 {name} {desc}？[y/N] ").strip().lower()
+        ans = input(prompt).strip().lower()
     except (EOFError, KeyboardInterrupt):
         return False
     return ans in ("y", "yes", "是")
@@ -70,10 +77,10 @@ def _build_real(workspace: Path, args, on_event, confirm):
     )
     ctx = Context(make_system_prompt(cfg.workspace), cfg.max_context_tokens)
     return AgentLoop(llm, ctx, ToolContext(cfg.workspace), max_steps=cfg.max_steps,
-                     on_event=on_event, confirm=confirm)
+                     on_event=on_event, confirm=confirm, plan_mode=args.plan)
 
 
-def _build_mock(workspace: Path, max_steps, budget, on_event, confirm):
+def _build_mock(workspace: Path, max_steps, budget, on_event, confirm, plan_mode=False):
     from .context import Context
     from .loop import AgentLoop
     from .mock import MockLLM
@@ -83,7 +90,7 @@ def _build_mock(workspace: Path, max_steps, budget, on_event, confirm):
     register_all()
     ctx = Context(make_system_prompt(workspace), budget or 56000)
     return AgentLoop(MockLLM(), ctx, ToolContext(workspace), max_steps=max_steps or 30,
-                     on_event=on_event, confirm=confirm)
+                     on_event=on_event, confirm=confirm, plan_mode=plan_mode)
 
 
 def _show_status(result: dict) -> None:
@@ -94,6 +101,8 @@ def _show_status(result: dict) -> None:
         print(f"\n[超时] {result.get('message')}")
     elif s == "stopped":
         print(f"\n[中止] {result.get('message')}")
+    elif s == "cancelled":
+        print(f"\n[已取消] {result.get('message')}")
     elif s == "error":
         print(f"\n[错误] {result.get('message')}")
     if result.get("steps") is not None:
@@ -167,7 +176,8 @@ def main(argv=None) -> int:
     from .session import Session
 
     renderer = CliRenderer()
-    confirm = _confirm_interactive if args.permission == "ask" else None
+    # 规划模式强制交互确认计划；权限 ask 时命令级确认
+    confirm = _confirm_interactive if (args.permission == "ask" or args.plan) else None
 
     with Session(workspace / "sessions") as session:
         def on_event(ev):
@@ -195,6 +205,13 @@ def main(argv=None) -> int:
                 print(f"[已恢复会话] {resume_path.name}（{len(msgs)} 条历史消息）")
             else:
                 print(f"[警告] 会话中没有可恢复的历史: {resume_path.name}")
+
+        # 工作区记忆：会话开始注入 .agent-memory.md 内容（恢复会话时避免重复注入）
+        memory_file = workspace / ".agent-memory.md"
+        if memory_file.exists() and not any(
+                "[工作区记忆]" in (m.get("content") or "") for m in loop.ctx.messages):
+            content = memory_file.read_text(encoding="utf-8", errors="replace")[:4000]
+            loop.ctx.add({"role": "user", "content": "[工作区记忆]\n" + content})
 
         def log_turn(result: dict):
             session.log({"type": "RunResult", "status": result.get("status"),

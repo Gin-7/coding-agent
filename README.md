@@ -36,6 +36,7 @@ python -m agent                    # 交互式 REPL，多轮对话
 | `read_file` | 读取文件（带行号，分页） |
 | `write_file` | 创建/整体覆盖写入文件（UTF-8） |
 | `edit_file` | 精确搜索-替换，保留原文件行尾风格 |
+| `undo_file` | 撤销最近一次修改（自动备份于 `.agent-backups/`） |
 | `list_dir` | 目录浏览（文件/子目录/大小） |
 | `search` | 递归搜索文件内容（子串/正则） |
 | `glob` | 按 glob 模式查找文件（支持 `**` 递归） |
@@ -52,9 +53,12 @@ python -m agent                    # 交互式 REPL，多轮对话
 python -m agent --resume "继续上一个任务：..."   # 从最近会话恢复历史继续干活
 python -m agent --resume-file sessions/session-xxx.jsonl "..."  # 指定会话恢复
 python -m agent --permission ask "任务"           # 审批模式：命令/提交需确认
+python -m agent --plan "任务"                     # 规划模式：先计划（只读探索）批准后执行
 python -m agent --version                         # 版本
 python -m agent --tools                           # 列出全部工具
 ```
+
+工作区记忆：`.agent-memory.md`（不入库）记录跨会话约定，会话开始自动注入上下文；agent 会在任务中更新它。
 
 REPL 内支持斜杠命令：`/stats`（token 统计）、`/tools`、`/clear`（清空历史）、`/help`、`/exit`。
 
