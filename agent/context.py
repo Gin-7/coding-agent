@@ -100,3 +100,46 @@ class Context:
                 break
             total += removed
         return total
+
+    # ---------- 压缩 / 截断 ----------
+
+    def find_compaction_boundary(self, keep_recent_rounds: int = 2) -> int:
+        """压缩边界：保留 [boundary, end)，压缩/丢弃 [first_user+1, boundary)。
+
+        边界定位：从尾部数第 keep_recent_rounds 个 assistant tool_calls 消息；
+        轮数不足时退到 first_user+1（无可压缩区域）。
+        """
+        first_user = next((i for i, m in enumerate(self.messages) if m["role"] == "user"), 1)
+        count = 0
+        for i in range(len(self.messages) - 1, first_user, -1):
+            if self.messages[i].get("tool_calls"):
+                count += 1
+                if count == keep_recent_rounds:
+                    return i
+        return first_user + 1
+
+    def region_before(self, boundary: int) -> list:
+        """压缩区域内消息：[first_user+1, boundary)（不含任务描述本身）。"""
+        first_user = next((i for i, m in enumerate(self.messages) if m["role"] == "user"), 1)
+        return self.messages[first_user + 1:boundary]
+
+    def apply_compaction(self, boundary: int, summary: str) -> int:
+        """用摘要替换压缩区域，返回被替换的消息数（0 表示无可替换）。"""
+        first_user = next((i for i, m in enumerate(self.messages) if m["role"] == "user"), 1)
+        removed = boundary - (first_user + 1)
+        if removed <= 0:
+            return 0
+        note = {"role": "user", "content": "【早期对话摘要】\n" + summary}
+        self.messages = self.messages[:first_user + 1] + [note] + self.messages[boundary:]
+        return removed
+
+    def hard_truncate(self, keep_recent_rounds: int = 2) -> int:
+        """最后手段：不生成摘要，直接丢弃压缩区域，返回丢弃消息数。"""
+        first_user = next((i for i, m in enumerate(self.messages) if m["role"] == "user"), 1)
+        boundary = self.find_compaction_boundary(keep_recent_rounds)
+        removed = boundary - (first_user + 1)
+        if removed <= 0:
+            return 0
+        note = {"role": "user", "content": "（早期执行记录已因上下文预算被丢弃）"}
+        self.messages = self.messages[:first_user + 1] + [note] + self.messages[boundary:]
+        return removed

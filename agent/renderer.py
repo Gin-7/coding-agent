@@ -7,8 +7,8 @@ import json
 import os
 import sys
 
-from .events import (ErrorEvent, FinishEvent, StepEvent, TextDelta, ToolCallEvent,
-                     ToolResultEvent, TrimmedEvent)
+from .events import (CompactedEvent, ErrorEvent, FinishEvent, StepEvent, TextDelta,
+                     ToolCallEvent, ToolResultEvent, TrimmedEvent)
 
 if os.name == "nt":
     os.system("")  # 启用 Windows 终端 VT 转义（ANSI 颜色）
@@ -43,3 +43,8 @@ class CliRenderer:
             print(_c("32", f"\n✅ {ev.summary}"))
         elif isinstance(ev, TrimmedEvent):
             print(_c("33", f"\n[上下文] 预算紧张，已裁剪最老的 {ev.rounds} 轮工具调用"))
+        elif isinstance(ev, CompactedEvent):
+            if ev.summarized:
+                print(_c("33", f"\n[上下文] 已把早期 {ev.messages_removed} 条消息压缩为摘要"))
+            else:
+                print(_c("33", f"\n[上下文] 已丢弃早期 {ev.messages_removed} 条消息"))

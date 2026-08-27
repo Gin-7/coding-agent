@@ -295,6 +295,79 @@ def test_credentials_protected(tmp):
     assert r["ok"] and "未找到" in r["output"]
 
 
+class _StubLLM:
+    """非流式 LLM 桩：记录调用，返回固定内容。"""
+
+    def __init__(self, content="压缩后的摘要内容"):
+        self.content = content
+        self.calls = []
+
+    def chat(self, messages, tools=None):
+        self.calls.append(messages)
+        return {"content": self.content, "tool_calls": [], "finish_reason": "stop", "usage": None}
+
+
+def _ctx_with_rounds(n: int, result_size: int = 10):
+    from agent.context import Context
+    ctx = Context("sys", 1_000_000)
+    ctx.add({"role": "user", "content": "task"})
+    for r in range(n):
+        ctx.add({"role": "assistant", "content": f"round {r}", "tool_calls": [
+            {"id": f"c{r}", "type": "function", "function": {"name": "x", "arguments": "{}"}}]})
+        ctx.add({"role": "tool", "tool_call_id": f"c{r}", "content": "r" * result_size})
+    return ctx
+
+
+def test_compaction_single_chunk(tmp):
+    from agent.compaction import compact_history
+    ctx = _ctx_with_rounds(3)
+    stub = _StubLLM(content="摘要内容")
+    removed = compact_history(ctx, stub, 100_000, keep_recent_rounds=1, min_region_tokens=0)
+    assert removed == 4  # 2 轮（4 条消息）被替换
+    roles = [m["role"] for m in ctx.messages]
+    assert roles == ["system", "user", "user", "assistant", "tool"]
+    assert "摘要内容" in ctx.messages[2]["content"]
+    assert ctx.messages[3]["tool_calls"][0]["id"] == "c2"  # 最近 1 轮保留
+    assert len(stub.calls) == 1  # 单块只需一次压缩调用
+
+
+def test_compaction_chunked_and_merged(tmp):
+    from agent.compaction import compact_history
+    # 20 轮（格式化后每轮约 86 tokens）→ 区域远超块上限 1000 → 必然分块 + 合并
+    ctx = _ctx_with_rounds(20, result_size=5000)
+    stub = _StubLLM(content="chunk summary")
+    removed = compact_history(ctx, stub, 2000, keep_recent_rounds=1, chunk_ratio=0.4, min_region_tokens=0)
+    assert removed == 38  # 19 轮（38 条消息）被替换
+    assert len(stub.calls) >= 3  # 至少 2 次块摘要 + 1 次合并
+    assert "【早期对话摘要】" in ctx.messages[2]["content"]
+    assert ctx.messages[-2]["tool_calls"][0]["id"] == "c19"  # 最近 1 轮保留
+
+
+def test_compaction_failure_falls_back(tmp):
+    from agent.compaction import compact_history
+
+    class _FailLLM:
+        def chat(self, messages, tools=None):
+            raise RuntimeError("api down")
+
+    ctx = _ctx_with_rounds(3)
+    assert compact_history(ctx, _FailLLM(), 100_000, keep_recent_rounds=1, min_region_tokens=0) == 0
+    # 调用方兜底：硬截断仍可工作
+    removed = ctx.hard_truncate(keep_recent_rounds=1)
+    assert removed == 4
+    roles = [m["role"] for m in ctx.messages]
+    assert roles == ["system", "user", "user", "assistant", "tool"]
+
+
+def test_compaction_small_region_skipped(tmp):
+    from agent.compaction import compact_history
+    ctx = _ctx_with_rounds(3)
+    stub = _StubLLM()
+    removed = compact_history(ctx, stub, 100_000, keep_recent_rounds=1, min_region_tokens=10_000)
+    assert removed == 0  # 区域太小，跳过压缩（不浪费调用）
+    assert len(stub.calls) == 0
+
+
 def main() -> int:
     import shutil
     tmp = TMP_ROOT / "run"

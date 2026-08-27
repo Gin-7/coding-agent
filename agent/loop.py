@@ -5,15 +5,18 @@
 """
 import json
 
+from .compaction import compact_history
 from .context import Context
-from .events import (ErrorEvent, FinishEvent, StepEvent, TextDelta, ToolCallEvent,
-                     ToolResultEvent, TrimmedEvent)
+from .events import (CompactedEvent, ErrorEvent, FinishEvent, StepEvent, TextDelta,
+                     ToolCallEvent, ToolResultEvent, TrimmedEvent)
 from .llm import LLMError
 from .parser import ParseError, parse_tool_calls, parse_text_protocol
 from .tools import TOOLS, ToolContext, dispatch, tool_schemas
 
 
 class AgentLoop:
+    KEEP_RECENT_ROUNDS = 2  # 预算管理时保留的最近工具调用轮数
+
     def __init__(self, llm, ctx: Context, tool_ctx: ToolContext, max_steps: int = 30, on_event=None):
         self.llm = llm
         self.ctx = ctx
@@ -24,6 +27,27 @@ class AgentLoop:
     def _emit(self, ev) -> None:
         if self.on_event:
             self.on_event(ev)
+
+    def _manage_context(self) -> None:
+        """预算管理三层策略：compaction（保留语义）→ 裁剪（免费兜底）→ 硬截断（最后手段）。"""
+        if not self.ctx.needs_trim():
+            return
+        # 1) compaction：把最近窗口之前的早期消息压缩为摘要（优先，保留语义）
+        removed = compact_history(self.ctx, self.llm, self.ctx.budget, self.KEEP_RECENT_ROUNDS)
+        if removed:
+            self._emit(CompactedEvent(removed, summarized=True))
+            if not self.ctx.needs_trim():
+                return
+        # 2) 裁剪兜底：整轮丢弃最老工具调用（免费，不消耗 LLM 调用）
+        trimmed = self.ctx.trim_to_budget()
+        if trimmed:
+            self._emit(TrimmedEvent(trimmed))
+            if not self.ctx.needs_trim():
+                return
+        # 3) 硬截断兜底：仅保留最近窗口
+        removed = self.ctx.hard_truncate(self.KEEP_RECENT_ROUNDS)
+        if removed:
+            self._emit(CompactedEvent(removed, summarized=False))
 
     def _maybe_hint_finish(self, step: int) -> None:
         """防空转：过半仍未 finish 时注入提示（不重复注入）。"""
@@ -48,9 +72,7 @@ class AgentLoop:
         for step in range(1, self.max_steps + 1):
             self._emit(StepEvent(step, self.max_steps))
             self._maybe_hint_finish(step)
-            trimmed = self.ctx.trim_to_budget()
-            if trimmed:
-                self._emit(TrimmedEvent(trimmed))
+            self._manage_context()
 
             # 1. 调 LLM（流式）
             content_parts, tool_calls_raw = [], []

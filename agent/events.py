@@ -64,6 +64,13 @@ class TrimmedEvent:
     rounds: int
 
 
+@dataclass
+class CompactedEvent:
+    """上下文管理：早期消息被压缩为摘要（summarized=True）或兜底丢弃（False）。"""
+    messages_removed: int
+    summarized: bool = True
+
+
 def event_to_dict(ev: Any) -> dict:
     """事件 → JSON 安全 dict（供会话日志与回放）。"""
     d = asdict(ev)

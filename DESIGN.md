@@ -35,7 +35,7 @@
 | LLM 客户端 | 自写 `requests` 版 OpenAI 兼容客户端 + SSE 流式 | 可讲清 wire protocol，协议层完全可控；避免引入厚重依赖 |
 | 运行时模型 | DeepSeek（base_url/model 可配置） | 便宜、tool calling 强、支持流式；换模型零成本。**已实测 Qwen（DashScope OpenAI 兼容网关）跑通**，零改动 |
 | 权限模型 | 工作区内自动执行 + 危险命令黑名单 | 演示流畅，安全设计有层次 |
-| 上下文管理 | 双轨 token 计量 + 裁剪 → compaction → 兜底截断 | 核心逻辑自研、可扩展 |
+| 上下文管理 | 双轨 token 计量 + compaction → 裁剪 → 硬截断 | 核心逻辑自研、可扩展 |
 | 前端形态 | 终端 CLI（事件流驱动渲染） | 无额外依赖，演示自然；为 Web UI 预留接口 |
 | 会话持久化 | JSONL 事件日志 | 可回放、可做回归测试、演示素材 |
 | 第三方依赖 | 仅 `requests` | 其余全标准库 |
@@ -141,10 +141,10 @@ coding-agent/
 1. **真实计量**：API 返回的 `usage` 累计进历史，作为权威依据
 2. **启发式预检**：发送前估算（CJK ≈ 1.5 token/字，ASCII ≈ 4 字符/token），超预算提前处理，避免请求被拒
 
-**超预算三层策略**：
-1. **裁剪**：移除最老的 tool 结果（保留一行摘要，如 `run_command: 输出被截断 (45 行)`）
-2. **compaction**：仍超预算 → 用一次独立 LLM 调用把旧对话（不含最近 K 轮）压缩成结构化摘要，替换进历史（Claude Code 同款思路）
-3. **兜底截断**：压缩失败 → 截断到最近 N 轮
+**超预算三层策略**（优先保留语义）：
+1. **compaction（优先）**：把最近 K 轮（默认 2）之前的早期消息用一次独立 LLM 调用压成结构化摘要，替换进历史（Claude Code 同款思路）；区域过大（超预算 40%）时分块压缩再合并，控制单次调用规模；区域过小（<512 tokens）时跳过，避免摘要被反复再摘要
+2. **裁剪（兜底，免费）**：compaction 不可用/不足时，以"轮"为单位整轮丢弃最老的工具调用（保护最新一轮，保证 tool 消息与 tool_calls 严格配对）
+3. **硬截断（最后手段）**：仅保留最近 K 轮，更早的直接丢弃并留提示
 
 ### 4.3 工具系统 `tools/`（注册表模式）
 
@@ -251,7 +251,7 @@ python -m agent "任务描述"               # 一次性模式（演示/自动�
 | D1 | 仓库初始化 + `llm.py` + `events.py` + 最小主循环（read_file / write_file / run_command / finish 四工具） | ✅ 完成：agent 自主跑通真实小任务（mock + 真实 Qwen API 双验证） |
 | D2 | `context.py` 预算 + 裁剪 + `loop.py` 错误处理完善 | ✅ 完成：错误自我修复闭环实测通过；裁剪在真实 API 下配对完整（budget=400 触发验证）；修复 finish 调用后历史配对缺失问题 |
 | D3 | 补齐 edit_file / list_dir / search + 流式输出 + CLI 打磨 + session.py | ✅ 完成：三个新工具实测通过（真实 API 综合任务验证）；凭据文件保护；--tools 列出工具 |
-| D4 | compaction + 文本协议兜底（特色功能） | 长任务稳定；无 tool calling 模型可跑 |
+| D4 | compaction + 文本协议兜底（特色功能） | ✅ 完成：compaction（分块压缩+合并）实测触发并正常收尾；三层策略 compaction → 裁剪 → 硬截断；文本协议兜底 D1 已就位 |
 | D5 | 测试（parser / context / tools）+ 使用文档 + 演示准备 | 全流程稳定可用，演示素材齐备 |
 | D6 | 缓冲：真实任务演练、修 bug、文档打磨 | 全流程彩排 |
 
