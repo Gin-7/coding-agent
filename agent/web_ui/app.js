@@ -63,6 +63,27 @@ async function getJSON(url) { const r = await fetch(url); return r.json(); }
 function joinPath(a, b) { return a === "." ? b : a + "/" + b; }
 function parentOf(p) { const i = p.lastIndexOf("/"); return i < 0 ? "." : p.slice(0, i) || "."; }
 
+/* ---------- 矢量图标 ---------- */
+const ICON = {
+  chevron: '<svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 6l6 6-6 6"/></svg>',
+  folder: '<svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>',
+  file: '<svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M6 2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"/></svg>',
+  plus: '<svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg>',
+  up: '<svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 19V5M5 12l7-7 7 7"/></svg>',
+  wrench: '<svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M21 6a5 5 0 0 1-6.9 4.6L7.5 17.2a2 2 0 1 1-2.8-2.8l6.6-6.6A5 5 0 0 1 19.2 2.8l-3 3 2 2 3-3A5 5 0 0 1 21 6z"/></svg>',
+  check: '<svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M20 6L9 17l-5-5"/></svg>',
+  checkCircle: '<svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M8.5 12l2.5 2.5 4.5-4.5"/></svg>',
+  warn: '<svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 3L2 20h20L12 3z"/><path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 10v4M12 17h.01"/></svg>',
+};
+function ic(name, cls) { return '<span class="ic ' + (cls || "svg14") + '">' + ICON[name] + "</span>"; }
+function addIconNote(icon, text, cls, parent) {
+  const b = document.createElement("div");
+  b.className = "note " + (cls || "");
+  b.innerHTML = ic(icon) + "<span>" + esc(text) + "</span>";
+  (parent || chatCol).appendChild(b); scrollToBottom();
+  return b;
+}
+
 /* ---------- 会话历史转写 ---------- */
 function renderTranscript(msgs) {
   chatCol.innerHTML = "";
@@ -85,7 +106,7 @@ function renderTranscript(msgs) {
         card.className = "tool-card open";
         const head = document.createElement("div");
         head.className = "tool-head";
-        head.innerHTML = "<span class=\"caret\">▸</span><span>🔧</span><span>" + esc(fn.name || "tool") + "</span>";
+        head.innerHTML = '<span class="caret">' + ICON.chevron + '</span><span class="tool-ic">' + ICON.wrench + '</span><span>' + esc(fn.name || "tool") + '</span>';
         const argsPre = document.createElement("pre");
         argsPre.className = "tool-args";
         try { argsPre.textContent = safeJson(JSON.parse(fn.arguments || "{}")); } catch (e) { argsPre.textContent = fn.arguments || ""; }
@@ -127,7 +148,7 @@ function render(ev) {
       card.className = "tool-card";
       const head = document.createElement("div");
       head.className = "tool-head";
-      head.innerHTML = "<span class=\"caret\">▸</span><span>🔧</span><span>" + esc(ev.name) + "</span>";
+      head.innerHTML = '<span class="caret">' + ICON.chevron + '</span><span class="tool-ic">' + ICON.wrench + '</span><span>' + esc(ev.name) + '</span>';
       const argsPre = document.createElement("pre");
       argsPre.className = "tool-args"; argsPre.textContent = safeJson(ev.arguments);
       const resultDiv = document.createElement("pre");
@@ -162,8 +183,14 @@ function render(ev) {
       addSystem(ev.summarized ? "[上下文] 已把早期 " + ev.messages_removed + " 条消息压缩为摘要"
                               : "[上下文] 已丢弃早期 " + ev.messages_removed + " 条消息", "", turn);
       break;
-    case "ErrorEvent": addSystem("⚠ " + ev.message, "error", turn); break;
-    case "FinishEvent": addBubble("finish", "✅ " + ev.summary, turn); break;
+    case "ErrorEvent": addIconNote("warn", ev.message, "error", turn); break;
+    case "FinishEvent": {
+      const b = document.createElement("div");
+      b.className = "bubble finish";
+      b.innerHTML = ic("checkCircle") + "<span>" + esc(ev.summary) + "</span>";
+      (turn || chatCol).appendChild(b); scrollToBottom();
+      break;
+    }
     case "Notice": addSystem(ev.message, "", turn); break;
     case "AskConfirm": showConfirm(ev.name, ev.desc); break;
     case "SessionsChanged": loadTree(); break;
@@ -196,14 +223,19 @@ async function loadTree() {
       const header = document.createElement("div");
       header.className = "tree-ws" + (open ? " open" : "");
       header.innerHTML =
-        '<svg class="caret" viewBox="0 0 24 24"><path fill="currentColor" d="M9 6l6 6-6 6z"/></svg>' +
-        '<svg viewBox="0 0 24 24"><path fill="currentColor" d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6z"/></svg>' +
-        "<span>" + esc(ws.name) + "</span>";
+        '<span class="caret">' + ICON.chevron + "</span>" +
+        '<span class="ws-ic">' + ICON.folder + "</span>" +
+        '<span class="ws-name">' + esc(ws.name) + "</span>" +
+        '<button class="ws-add" title="新建会话">' + ICON.plus + "</button>";
       header.addEventListener("click", () => {
         const o = expandedRoots.has(ws.root);
         if (o) expandedRoots.delete(ws.root); else expandedRoots.add(ws.root);
         header.classList.toggle("open", !o);
         sessionsEl.style.display = !o ? "block" : "none";
+      });
+      header.querySelector(".ws-add").addEventListener("click", e => {
+        e.stopPropagation();
+        newSessionInWorkspace(ws.root);
       });
       const sessionsEl = document.createElement("div");
       sessionsEl.className = "tree-sessions";
@@ -259,6 +291,20 @@ async function selectSession(root, filename) {
   } catch (e) { }
 }
 document.getElementById("btn-add-workspace").addEventListener("click", () => { browseDir = ""; renderBrowse(); document.getElementById("workspace-modal").classList.remove("hidden"); });
+// 点击文件夹选择器外部关闭
+document.getElementById("workspace-modal").addEventListener("click", e => {
+  if (e.target === document.getElementById("workspace-modal")) document.getElementById("workspace-modal").classList.add("hidden");
+});
+async function newSessionInWorkspace(root) {
+  const r = await fetch("/api/workspace/session/new", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ path: root }) });
+  const d = await r.json();
+  if (d.ok) {
+    dataLoadedOnce = false;
+    await loadTree();
+    chatCol.innerHTML = "";
+    showEmpty(true);
+  } else { addSystem("⚠ " + (d.message || "新建会话失败"), "error"); }
+}
 
 /* ---------- 设置弹窗 ---------- */
 const settingsEl = document.getElementById("settings");
@@ -319,7 +365,7 @@ async function renderBrowse() {
   const canChoose = !!browseDir && !/^[A-Za-z]:[\\/]?$/.test(browseDir.replace(/\\/g, "/"));
   document.getElementById("browse-hint").style.display = canChoose ? "none" : "";
   document.getElementById("browse-list").innerHTML = d.entries.map(e =>
-    `<div class="browse-item" data-path="${esc(e.path)}">📁 ${esc(e.name)}</div>`).join("");
+    `<div class="browse-item" data-path="${esc(e.path)}">` + ic("folder") + "<span>" + esc(e.name) + "</span></div>").join("");
   document.querySelectorAll(".browse-item").forEach(x => x.addEventListener("click", () => { browseDir = x.dataset.path; renderBrowse(); }));
 }
 function isChoosableFolder(p) { return !!p && !/^[A-Za-z]:[\\/]?$/.test(p.replace(/\\/g, "/")); }
@@ -349,9 +395,10 @@ async function loadFiles() {
     const d = await getJSON("/api/files?path=" + encodeURIComponent(fileDir));
     if (d.error) return;
     document.getElementById("files").innerHTML =
-      (fileDir !== "." ? `<div class="file-item" data-path="${esc(parentOf(fileDir))}">↩ ..</div>` : "") +
+      (fileDir !== "." ? `<div class="file-item dir" data-path="${esc(parentOf(fileDir))}">${ic("up")}..</div>` : "") +
       d.entries.map(e => `<div class="file-item ${e.dir ? "dir" : ""}" data-path="${esc(joinPath(fileDir, e.name))}">` +
-        (e.dir ? "📁 " : "📄 ") + esc(e.name) + (e.dir ? "" : " (" + e.size + " B)") + "</div>").join("");
+        (e.dir ? ic("folder") : ic("file")) + "<span>" + esc(e.name) + "</span>" +
+        (e.dir ? "" : " <span class=\"size\">(" + e.size + " B)</span>") + "</div>").join("");
     document.querySelectorAll(".file-item").forEach(x => x.addEventListener("click", () => { if (x.dataset.path) { fileDir = x.dataset.path; loadFiles(); } }));
   } catch (e) { }
 }

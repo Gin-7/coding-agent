@@ -264,6 +264,8 @@ class WebAgentServer:
         ctx = Context(self.system_prompt, self.budget)
         ctx.messages = list(rec.messages)
         self.loop.ctx = ctx
+        # 关键：工具根目录同步到当前工作区（否则 agent 仍操作旧工作区）
+        self.loop.tool_ctx.workspace = self.workspace.root
         self.workspace.active_filename = rec.filename
 
     def _fresh_messages(self) -> list:
@@ -286,6 +288,20 @@ class WebAgentServer:
             return False, "任务执行中无法切换会话"
         self._activate(rec)
         return True, rec.name
+
+    def new_session_in(self, path: str):
+        """在指定工作区新建会话（必要时先切换工作区）。"""
+        if self.is_running():
+            return False, "任务执行中无法新建会话"
+        cur = str(self.workspace.root).replace("\\", "/").rstrip("/")
+        target = str(Path(path).resolve()).replace("\\", "/").rstrip("/")
+        if cur != target:
+            ok, msg = self.select_workspace(path)
+            if not ok:
+                return False, msg
+        rec = self.workspace.new_session()
+        self._activate(rec)
+        return True, rec.filename
 
     def session_messages(self, filename: str):
         rec = self.workspace.get(filename)
@@ -543,6 +559,12 @@ def build_handler(server: WebAgentServer):
             elif path == "/api/session/new":
                 server.new_session()
                 self._json({"ok": True, "workspace": server.workspace_meta()})
+            elif path == "/api/workspace/session/new":
+                ok, msg = server.new_session_in(body.get("path", ""))
+                if ok:
+                    self._json({"ok": True, "workspace": server.workspace_meta()})
+                else:
+                    self._json({"ok": False, "message": msg}, 400)
             elif path == "/api/session/select":
                 ok, msg = server.select_session(body.get("filename", ""))
                 if ok:

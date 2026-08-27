@@ -48,6 +48,23 @@ def test_web_server_endpoints(tmp):
             ws_list = _json.loads(r.read())
         assert len(ws_list) >= 1 and ws_list[0]["is_active"]
 
+        # 在指定工作区新建会话；切换工作区后工具根目录必须同步（关键修复）
+        sub = ws / "subws"
+        sub.mkdir()
+        req = urllib.request.Request(base + "/api/workspace/session/new", data=_json.dumps(
+            {"path": str(sub)}).encode("utf-8"), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert _json.loads(r.read())["ok"]
+        assert str(web.loop.tool_ctx.workspace).replace("\\", "/").rstrip("/") == \
+            str(sub.resolve()).replace("\\", "/").rstrip("/")
+
+        # 切回默认工作区
+        req = urllib.request.Request(base + "/api/workspace", data=_json.dumps(
+            {"path": str(ws)}).encode("utf-8"), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert _json.loads(r.read())["ok"]
+        assert str(web.loop.tool_ctx.workspace).replace("\\", "/") == str(ws.resolve()).replace("\\", "/")
+
         req = urllib.request.Request(base + "/api/session/new", data=b"{}",
                                      headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=10) as r:

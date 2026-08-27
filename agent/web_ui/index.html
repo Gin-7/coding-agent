@@ -12,7 +12,7 @@
     <div id="brand"><span class="mark">⌘</span><span>Coding Agent</span></div>
     <div class="tree-label">
       <span>工作区</span>
-      <button id="btn-add-workspace" class="icon-mini" title="添加工作区">＋</button>
+      <button id="btn-add-workspace" class="icon-mini" title="添加工作区"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" d="M12 5v14M5 12h14"/></svg></button>
     </div>
     <div class="sidebar-scroll" id="tree-wrap"><div id="tree"></div></div>
     <div class="sidebar-foot">
@@ -48,7 +48,7 @@
   </main>
 
   <aside id="right-panel">
-    <div class="right-head"><span>文件</span><button id="btn-file-up" class="icon-mini">↩</button></div>
+    <div class="right-head"><span>文件</span><button id="btn-file-up" class="icon-mini" title="上级目录"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 19V5M5 12l7-7 7 7"/></svg></button></div>
     <div class="panel-body"><div id="files"></div></div>
   </aside>
 </div>
@@ -79,12 +79,12 @@
 <!-- 文件夹选择器 -->
 <div id="workspace-modal" class="modal hidden">
   <div class="modal-box">
-    <div class="modal-head"><h3>选择工作区文件夹</h3><button id="btn-workspace-cancel" class="icon-close">✕</button></div>
+    <div class="modal-head"><h3>选择工作区文件夹</h3><button id="btn-workspace-cancel" class="icon-close"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg></button></div>
     <div id="browse-path" class="browse-path"></div>
     <div id="browse-hint" class="browse-hint">请进入要作为工作区的文件夹</div>
     <div id="browse-list" class="browse-list"></div>
     <div class="modal-actions">
-      <button id="btn-browse-up" class="ghost">↩ 上级</button>
+      <button id="btn-browse-up" class="ghost"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 19V5M5 12l7-7 7 7"/></svg>&nbsp;上级</button>
       <button id="btn-workspace-choose">选择当前文件夹</button>
     </div>
   </div>
