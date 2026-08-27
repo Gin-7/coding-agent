@@ -280,6 +280,10 @@ async function renderBrowse() {
   const d = await getJSON("/api/fs/browse?path=" + encodeURIComponent(browseDir));
   if (d.error) return;
   document.getElementById("browse-path").textContent = d.isRoot ? "计算机" : (d.path || "/");
+  // 仅当进入了一个真实文件夹（非盘符根 / 根）时才能选择
+  const canChoose = !!browseDir && !/^[A-Za-z]:[\\/]?$/.test(browseDir.replace(/\\/g, "/"));
+  document.getElementById("btn-workspace-choose").disabled = !canChoose;
+  document.getElementById("browse-hint").style.display = canChoose ? "none" : "";
   document.getElementById("browse-list").innerHTML = d.entries.map(e =>
     `<div class="browse-item" data-path="${esc(e.path)}">📁 ${esc(e.name)}</div>`).join("");
   document.querySelectorAll(".browse-item").forEach(x => x.addEventListener("click", () => { browseDir = x.dataset.path; renderBrowse(); }));
