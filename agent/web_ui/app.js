@@ -1,7 +1,8 @@
 /* Coding Agent Web UI —— 事件流的浏览器渲染器 */
 "use strict";
 
-const chat = document.getElementById("chat");
+const chatCol = document.getElementById("chat-col");
+const scrollEl = document.getElementById("chat");
 const input = document.getElementById("input");
 const btnRun = document.getElementById("btn-run");
 const btnInterrupt = document.getElementById("btn-interrupt");
@@ -22,14 +23,17 @@ function setRunning(v) {
   statusDot.className = v ? "on" : "";
 }
 function scrollToBottom() {
-  const near = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 260;
-  if (near) chat.scrollTop = chat.scrollHeight;
+  const near = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 260;
+  if (near) scrollEl.scrollTop = scrollEl.scrollHeight;
+}
+function hideEmpty() {
+  document.getElementById("empty").style.display = "none";
 }
 function addBubble(cls, text) {
   const b = document.createElement("div");
   b.className = "bubble " + cls;
   if (text !== undefined) b.textContent = text;
-  chat.appendChild(b);
+  chatCol.appendChild(b);
   scrollToBottom();
   return b;
 }
@@ -37,7 +41,7 @@ function addSystem(text, cls) {
   const b = document.createElement("div");
   b.className = "note " + (cls || "");
   b.textContent = text;
-  chat.appendChild(b);
+  chatCol.appendChild(b);
   scrollToBottom();
 }
 
@@ -45,11 +49,15 @@ function addSystem(text, cls) {
 function render(ev) {
   switch (ev.type) {
     case "UserMessage":
+      hideEmpty();
       addBubble("user", ev.content);
       lastAssistant = null; lastCommandPre = null;
       break;
     case "TextDelta":
-      if (!lastAssistant) lastAssistant = addBubble("assistant", "");
+      if (!lastAssistant) {
+        lastAssistant = addBubble("assistant", "");
+        lastAssistant.classList.add("running");
+      }
       lastAssistant.textContent += ev.text;
       scrollToBottom();
       break;
@@ -58,7 +66,7 @@ function render(ev) {
       card.className = "tool-card";
       const head = document.createElement("div");
       head.className = "tool-head";
-      head.innerHTML = "<span>🔧</span><span>" + esc(ev.name) + "</span>";
+      head.innerHTML = "<span class=\"caret\">▸</span><span>🔧</span><span>" + esc(ev.name) + "</span>";
       const argsPre = document.createElement("pre");
       argsPre.className = "tool-args";
       argsPre.textContent = safeJson(ev.arguments);
@@ -68,7 +76,7 @@ function render(ev) {
       card.appendChild(head);
       card.appendChild(argsPre);
       card.appendChild(resultDiv);
-      chat.appendChild(card);
+      chatCol.appendChild(card);
       toolCards.set(ev.call_id, { card, resultDiv });
       scrollToBottom();
       break;
@@ -77,7 +85,7 @@ function render(ev) {
       if (!lastCommandPre) {
         lastCommandPre = document.createElement("pre");
         lastCommandPre.className = "cmd-output";
-        chat.appendChild(lastCommandPre);
+        chatCol.appendChild(lastCommandPre);
       }
       lastCommandPre.textContent += ev.text;
       scrollToBottom();
@@ -118,6 +126,7 @@ function render(ev) {
       break;
     case "RunResult":
       setRunning(false);
+      if (lastAssistant) lastAssistant.classList.remove("running");
       if (ev.status === "finished") addSystem("[完成] " + (ev.summary || ""), "ok");
       else addSystem("[" + ev.status + "] " + (ev.message || ""), "error");
       if (ev.steps != null) {
