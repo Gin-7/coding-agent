@@ -21,6 +21,7 @@ WEB_UI_DIR = Path(__file__).resolve().parent / "web_ui"
 SESSIONS_DIR_NAME = "sessions"
 MAX_SESSION_NAME = 24
 MAX_SESSIONS_SHOWN = 100
+SETTINGS_FILE_NAME = ".agent-settings.json"
 
 
 class EventHub:
@@ -149,6 +150,8 @@ class WebAgentServer:
         self._pending_confirm = None
         self._lock = threading.Lock()
         self._load_registry()
+        self.settings_path = self.default_root / SETTINGS_FILE_NAME
+        self.settings = self._load_settings()
 
     # ---------- 工作区注册表（左侧边栏展示所有工作区） ----------
 
@@ -192,6 +195,36 @@ class WebAgentServer:
                 json.dumps({"workspaces": out}, ensure_ascii=False, indent=2), encoding="utf-8")
         except OSError:
             pass
+
+    # ---------- 设置持久化（主题 / 侧栏布局；与工作区注册表同款本地 JSON） ----------
+
+    def _load_settings(self) -> dict:
+        try:
+            data = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return {k: data[k] for k in ("theme", "sidebar_collapsed", "right_collapsed") if k in data}
+
+    def _save_settings(self) -> None:
+        try:
+            self.settings_path.write_text(
+                json.dumps(self.settings, ensure_ascii=False, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+
+    def get_settings(self) -> dict:
+        return dict(self.settings)
+
+    def update_settings(self, patch: dict) -> dict:
+        """白名单键 + 值校验后合并保存；未知键 / 非法值直接忽略。"""
+        if isinstance(patch, dict):
+            if patch.get("theme") in ("dark", "light"):
+                self.settings["theme"] = patch["theme"]
+            for k in ("sidebar_collapsed", "right_collapsed"):
+                if isinstance(patch.get(k), bool):
+                    self.settings[k] = patch[k]
+            self._save_settings()
+        return self.get_settings()
 
     def list_workspaces(self) -> list:
         result = []
@@ -510,6 +543,8 @@ def build_handler(server: WebAgentServer):
                 fn = (query.get("filename") or [""])[0]
                 data, code = server.session_messages(fn)
                 self._json(data, code)
+            elif path == "/api/settings":
+                self._json(server.get_settings())
             elif path == "/api/status":
                 self._json({"running": server.is_running(), "root": str(server.workspace.root)})
             else:
@@ -550,6 +585,8 @@ def build_handler(server: WebAgentServer):
             elif path == "/api/confirm":
                 server.answer_confirm(bool(body.get("approved")))
                 self._json({"ok": True})
+            elif path == "/api/settings":
+                self._json(server.update_settings(body))
             elif path == "/api/workspace":
                 ok, msg = server.select_workspace(body.get("path", ""))
                 if ok:

@@ -1,4 +1,4 @@
-"""Web 服务器测试：静态页、工具、工作区/会话、运行任务、SSE、文件夹浏览。"""
+"""Web 服务器测试：静态页、工具、工作区/会话、运行任务、SSE、文件夹浏览、设置持久化。"""
 import json as _json
 import sys
 import threading
@@ -108,6 +108,55 @@ def test_web_server_endpoints(tmp):
 
         with urllib.request.urlopen(base + "/api/files?path=.", timeout=10) as r:
             assert "path" in _json.loads(r.read())
+    finally:
+        httpd.shutdown()
+        httpd.server_close()
+
+
+def test_settings_persist(tmp):
+    """设置持久化：白名单校验 + 落盘 .agent-settings.json + 重启后读回。"""
+    from agent.web import EventHub, SETTINGS_FILE_NAME, WebAgentServer, Workspace
+
+    ws = make_ws(tmp, "settings")
+    web = WebAgentServer(None, EventHub(), Workspace(ws))
+    assert web.get_settings() == {}
+
+    # 合法键保存，未知键忽略
+    out = web.update_settings({"theme": "light", "sidebar_collapsed": True, "evil": "x"})
+    assert out == {"theme": "light", "sidebar_collapsed": True}
+    data = _json.loads((ws / SETTINGS_FILE_NAME).read_text(encoding="utf-8"))
+    assert data["theme"] == "light" and data["sidebar_collapsed"] is True
+
+    # 新实例（模拟服务重启）读回；非法值不覆盖
+    web2 = WebAgentServer(None, EventHub(), Workspace(ws))
+    assert web2.get_settings() == {"theme": "light", "sidebar_collapsed": True}
+    web2.update_settings({"theme": "blue", "sidebar_collapsed": "yes"})
+    assert web2.get_settings() == {"theme": "light", "sidebar_collapsed": True}
+
+    # HTTP 端到端：POST /api/settings → GET /api/settings
+    from agent.context import Context
+    from agent.loop import AgentLoop
+    from agent.mock import MockLLM
+    from agent.prompts import make_system_prompt
+    from agent.tools import ToolContext, register_all
+    from agent.web import create_server
+    register_all()
+    ws2 = make_ws(tmp, "settings-http")
+
+    def factory(on_event, hub, web):
+        return AgentLoop(MockLLM(), Context(make_system_prompt(str(ws2)), 56000),
+                         ToolContext(ws2), max_steps=10, on_event=on_event)
+
+    httpd, web = create_server(ws2, factory, port=0)
+    base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    try:
+        req = urllib.request.Request(base + "/api/settings", data=_json.dumps(
+            {"theme": "light"}).encode("utf-8"), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert _json.loads(r.read())["theme"] == "light"
+        with urllib.request.urlopen(base + "/api/settings", timeout=10) as r:
+            assert _json.loads(r.read())["theme"] == "light"
+        assert _json.loads((ws2 / SETTINGS_FILE_NAME).read_text(encoding="utf-8"))["theme"] == "light"
     finally:
         httpd.shutdown()
         httpd.server_close()

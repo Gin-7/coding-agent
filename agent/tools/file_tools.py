@@ -24,12 +24,6 @@ def _backup(tool_ctx, p: Path) -> None:
     dest = tool_ctx.workspace / BACKUP_ROOT / (str(rel).replace("\\", "/") + ".bak")
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(p, dest)
-from pathlib import Path
-
-from .paths import ensure_safe_file, resolve_workspace_path
-from .registry import register
-
-MAX_READ_LINES = 2000
 
 
 def _read_text(p: Path) -> str:
@@ -133,7 +127,10 @@ def tool_undo_file(tool_ctx, path: str) -> str:
     if not bak.exists():
         return f"没有可撤销的备份: {path}"
     shutil.copy2(bak, p)
-    bak.unlink()
+    try:
+        bak.unlink()
+    except OSError:
+        pass  # 恢复已完成；备份删除失败（如被文件锁占用）不影响撤销结果
     return f"已撤销对 {path} 的最近一次修改（从备份恢复）"
 
 

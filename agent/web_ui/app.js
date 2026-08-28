@@ -432,20 +432,32 @@ document.querySelectorAll(".st[data-tab]").forEach(btn => btn.addEventListener("
 const sidebarEl = document.getElementById("sidebar");
 const rightPanelEl = document.getElementById("right-panel");
 const btnRightExpand = document.getElementById("btn-right-expand");
-document.getElementById("btn-left-collapse").addEventListener("click", () => sidebarEl.classList.add("collapsed"));
-document.getElementById("btn-left-expand").addEventListener("click", () => sidebarEl.classList.remove("collapsed"));
+function setLeftCollapsed(v, persist) {
+  sidebarEl.classList.toggle("collapsed", v);
+  if (persist) saveSettings({ sidebar_collapsed: v });
+}
+function setRightCollapsed(v, persist) {
+  rightPanelEl.classList.toggle("collapsed", v);
+  btnRightExpand.hidden = !v;
+  if (persist) saveSettings({ right_collapsed: v });
+}
+document.getElementById("btn-left-collapse").addEventListener("click", () => setLeftCollapsed(true, true));
+document.getElementById("btn-left-expand").addEventListener("click", () => setLeftCollapsed(false, true));
 document.getElementById("btn-settings-rail").addEventListener("click", () => settingsEl.classList.remove("hidden"));
-document.getElementById("btn-right-collapse").addEventListener("click", () => { rightPanelEl.classList.add("collapsed"); btnRightExpand.hidden = false; });
-btnRightExpand.addEventListener("click", () => { rightPanelEl.classList.remove("collapsed"); btnRightExpand.hidden = true; });
+document.getElementById("btn-right-collapse").addEventListener("click", () => setRightCollapsed(true, true));
+btnRightExpand.addEventListener("click", () => setRightCollapsed(false, true));
 
-/* ---------- 主题（仅设置面板） ---------- */
-function applyTheme(t) {
+/* ---------- 设置持久化（服务端 /api/settings，localStorage 仅作主题首帧缓存防闪屏） ---------- */
+function saveSettings(patch) {
+  fetch("/api/settings", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) }).catch(() => { });
+}
+function applyTheme(t, persist) {
   document.documentElement.dataset.theme = t;
-  localStorage.setItem("agent-theme", t);
+  if (persist) { localStorage.setItem("agent-theme", t); saveSettings({ theme: t }); }
   document.querySelectorAll('input[name="theme"]').forEach(r => { r.checked = (r.value === t); });
 }
-(function initTheme() { applyTheme(localStorage.getItem("agent-theme") || "dark"); })();
-document.querySelectorAll('input[name="theme"]').forEach(r => r.addEventListener("change", () => applyTheme(r.value)));
+(function initTheme() { applyTheme(localStorage.getItem("agent-theme") || "dark", false); })();
+document.querySelectorAll('input[name="theme"]').forEach(r => r.addEventListener("change", () => applyTheme(r.value, true)));
 
 /* ---------- 审批 ---------- */
 function showConfirm(name, desc) {
@@ -537,4 +549,14 @@ async function loadTools() {
 const es = new EventSource("/api/events");
 es.onmessage = e => { try { render(JSON.parse(e.data)); } catch (err) { } };
 
-loadTree(); loadFiles(); loadTools();
+/* ---------- 启动时拉取服务端设置（主题 / 侧栏布局） ---------- */
+async function loadSettings() {
+  try {
+    const s = await getJSON("/api/settings");
+    if (s.theme === "dark" || s.theme === "light") applyTheme(s.theme, false);
+    if (typeof s.sidebar_collapsed === "boolean") setLeftCollapsed(s.sidebar_collapsed, false);
+    if (typeof s.right_collapsed === "boolean") setRightCollapsed(s.right_collapsed, false);
+  } catch (e) { }
+}
+
+loadTree(); loadFiles(); loadTools(); loadSettings();

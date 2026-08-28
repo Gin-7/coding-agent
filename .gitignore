@@ -22,6 +22,7 @@ sessions/
 .agent-memory.md
 .agent-backups/
 .agent-workspaces.json
+.agent-settings.json
 
 # mock 演示产物
 hello.txt
