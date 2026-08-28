@@ -7,7 +7,8 @@ import json
 import os
 import sys
 
-from .events import (CommandOutput, CompactedEvent, ErrorEvent, FinishEvent, StepEvent,
+from .events import (BackgroundOutput, BackgroundStarted, BackgroundStatus, CommandOutput,
+                     CompactedEvent, ErrorEvent, FinishEvent, StepEvent, SubagentResult,
                      TextDelta, ToolCallEvent, ToolResultEvent, TrimmedEvent)
 
 if os.name == "nt":
@@ -50,3 +51,11 @@ class CliRenderer:
                 print(_c("33", f"\n[上下文] 已把早期 {ev.messages_removed} 条消息压缩为摘要"))
             else:
                 print(_c("33", f"\n[上下文] 已丢弃早期 {ev.messages_removed} 条消息"))
+        elif isinstance(ev, BackgroundStarted):
+            print(_c("35", f"\n⏳ 后台任务 {ev.task_id} 启动 (pid={ev.pid}): {ev.command}"))
+        elif isinstance(ev, BackgroundOutput):
+            print(_c("90", ev.text), end="", flush=True)
+        elif isinstance(ev, BackgroundStatus):
+            print(_c("35", f"\n[后台] {ev.task_id} {ev.status}" + (f" 退出码 {ev.exit_code}" if ev.exit_code is not None else "")))
+        elif isinstance(ev, SubagentResult):
+            print(_c("36", f"\n[子agent {ev.task_id}] {ev.status}: {ev.summary[:200]}"))

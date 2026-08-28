@@ -77,6 +77,37 @@ class CompactedEvent:
     summarized: bool = True
 
 
+@dataclass
+class BackgroundStarted:
+    """后台任务启动（长命令不阻塞主循环）。"""
+    task_id: str
+    command: str
+    pid: int
+
+
+@dataclass
+class BackgroundOutput:
+    """后台任务实时输出。"""
+    task_id: str
+    text: str
+
+
+@dataclass
+class BackgroundStatus:
+    """后台任务状态变化（done / stopped）。"""
+    task_id: str
+    status: str
+    exit_code: int = None
+
+
+@dataclass
+class SubagentResult:
+    """子 agent 完成汇总。"""
+    task_id: str
+    status: str
+    summary: str
+
+
 def event_to_dict(ev: Any) -> dict:
     """事件 → JSON 安全 dict（供会话日志与回放）。"""
     d = asdict(ev)

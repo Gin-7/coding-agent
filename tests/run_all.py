@@ -6,7 +6,8 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
-MODULES = ["test_context", "test_parser", "test_tools", "test_loop", "test_session", "test_web"]
+MODULES = ["test_context", "test_parser", "test_tools", "test_loop",
+           "test_session", "test_background", "test_web"]
 if "--quick" in sys.argv:
     MODULES = ["test_context", "test_parser", "test_tools", "test_loop", "test_session"]
 

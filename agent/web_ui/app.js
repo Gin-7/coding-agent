@@ -13,6 +13,7 @@ let assistantRaw = "";
 let turn = null;             // 当前 agent 对话合并框
 let lastActiveRoot = "";     // 上次活动工作区（用于文件树随工作区切换）
 const toolCards = new Map();
+const bgEls = new Map();     // 后台任务 task_id -> 输出 <pre> 元素
 let lastCmdToolEl = null;   // 最近一次 run_command 工具卡片（命令输出归入其展开详情）
 let fileDir = ".";
 let browseDir = "";
@@ -309,6 +310,29 @@ function render(ev, opts) {
       break;
     }
     case "Notice": addSystem(ev.message, "", turn); break;
+    case "BackgroundStarted":
+      addSystem("⏳ 后台任务 " + ev.task_id + " 启动: " + ev.command, "", turn);
+      bgEls.set(ev.task_id, null);
+      break;
+    case "BackgroundOutput": {
+      let pre = bgEls.get(ev.task_id);
+      if (!pre) {
+        pre = document.createElement("pre");
+        pre.className = "cmd-output";
+        (turn || chatCol).appendChild(pre);
+        bgEls.set(ev.task_id, pre);
+      }
+      pre.textContent += ev.text;
+      scrollToBottom();
+      break;
+    }
+    case "BackgroundStatus":
+      addSystem("[后台] " + ev.task_id + " " + ev.status +
+                (ev.exit_code != null ? "（退出码 " + ev.exit_code + "）" : ""), "", turn);
+      break;
+    case "SubagentResult":
+      addSystem("[子agent " + ev.task_id + "] " + (ev.status || "") + "：\n" + (ev.summary || "").slice(0, 300), "", turn);
+      break;
     case "AskConfirm":
       // 回放时审批已发生，仅作注记；实时才弹窗等待
       if (replay) addIconNote("warn", "审批点：" + ev.name + (ev.desc ? " — " + ev.desc : ""), "note", turn);

@@ -5,9 +5,11 @@
 """
 import json
 
+from .background import BackgroundManager
 from .compaction import compact_history
 from .context import Context
-from .events import (CommandOutput, CompactedEvent, ErrorEvent, FinishEvent, StepEvent,
+from .events import (BackgroundOutput, BackgroundStarted, BackgroundStatus, CommandOutput,
+                     CompactedEvent, ErrorEvent, FinishEvent, StepEvent, SubagentResult,
                      TextDelta, ToolCallEvent, ToolResultEvent, TrimmedEvent)
 from .llm import LLMError
 from .parser import ParseError, parse_tool_calls, parse_text_protocol
@@ -16,15 +18,28 @@ from .tools import TOOLS, ToolContext, dispatch, tool_schemas
 # 需要用户确认（审批模式）的工具
 GUARDED_TOOLS = ("run_command", "git_commit")
 
-# 规划阶段仅开放只读工具：探索现状可以，但任何写/执行动作必须等计划批准
-PLAN_TOOLS = ("read_file", "list_dir", "search", "glob", "git_status", "git_diff")
+# 规划阶段 / 子 agent 默认只开放只读工具
+READONLY_TOOLS = ("read_file", "list_dir", "search", "glob", "git_status", "git_diff")
+PLAN_TOOLS = READONLY_TOOLS
+MAX_SUBAGENT_DEPTH = 2   # 子 agent 嵌套深度上限（不能再 spawn 的防线）
+MAX_SUBAGENT_STEPS = 20  # 子 agent 步数上限
+
+_subagent_counter = 0
+
+
+def _next_subagent_id() -> str:
+    global _subagent_counter
+    _subagent_counter += 1
+    return f"sub-{_subagent_counter}"
 
 
 class AgentLoop:
     KEEP_RECENT_ROUNDS = 2  # 预算管理时保留的最近工具调用轮数
+    MAX_SUBAGENT_DEPTH = MAX_SUBAGENT_DEPTH
 
     def __init__(self, llm, ctx: Context, tool_ctx: ToolContext, max_steps: int = 30,
-                 on_event=None, confirm=None, plan_mode: bool = False, interrupt_event=None):
+                 on_event=None, confirm=None, plan_mode: bool = False, interrupt_event=None,
+                 allowed_tools=None, subagent_depth: int = 0):
         self.llm = llm
         self.ctx = ctx
         self.tool_ctx = tool_ctx
@@ -33,8 +48,65 @@ class AgentLoop:
         self.confirm = confirm  # 可选：Callable[[tool_name, args_desc], bool]，审批模式回调
         self.plan_mode = plan_mode  # 先计划后行动：第一轮后展示计划征求批准
         self.interrupt_event = interrupt_event  # 可选：threading.Event，Web UI 中断用
+        self.allowed_tools = allowed_tools  # 可选：set/序列，仅允许这些工具（子 agent 只读）
+        self.subagent_depth = subagent_depth  # 嵌套深度（防止子 agent 无限递归）
         self._plan_approved = False
         self.tool_ctx.on_output = lambda text: self._emit(CommandOutput(text))
+        # 后台任务管理器（挂到工具上下文，供后台工具访问）
+        self.background = BackgroundManager()
+        self.background.on_output = lambda tid, text: self._emit(BackgroundOutput(tid, text))
+        self.background.emit = self._bg_emit
+        self.tool_ctx.background = self.background
+        self.tool_ctx.subagent = self._run_subagent
+
+    def _bg_emit(self, ev: dict):
+        t = ev.get("type")
+        if t == "BackgroundStarted":
+            self._emit(BackgroundStarted(ev["task_id"], ev["command"], ev["pid"]))
+        elif t == "BackgroundStatus":
+            self._emit(BackgroundStatus(ev["task_id"], ev["status"], ev.get("exit_code")))
+
+    def _schemas(self):
+        """当前调用应暴露给模型的工具 schema。"""
+        base = tool_schemas()
+        if self.allowed_tools is not None:
+            allowed = set(self.allowed_tools)
+            base = [s for s in base if s["function"]["name"] in allowed]
+        if self._plan_pending():
+            base = [s for s in base if s["function"]["name"] in PLAN_TOOLS]
+        return base
+
+    def _run_subagent(self, prompt: str, max_steps: int = 8, tools=None) -> str:
+        """运行一个独立的子 agent（同步），返回有界结果字符串。"""
+        if self.subagent_depth >= self.MAX_SUBAGENT_DEPTH:
+            return "达子 agent 嵌套深度上限，不再派生"
+        steps = max(1, min(int(max_steps or 8), MAX_SUBAGENT_STEPS))
+        allowed = set(tools) if tools else set(READONLY_TOOLS)
+        from .prompts import make_system_prompt
+        sub_ctx = Context(make_system_prompt(self.tool_ctx.workspace), self.ctx.budget)
+        # 子 agent 共享 tool_ctx（工作区/后台管理），但其 __init__ 会覆盖 on_output，需保存并在跑完后恢复
+        parent_on_output = self.tool_ctx.on_output
+        sub_loop = AgentLoop(self.llm, sub_ctx, self.tool_ctx, max_steps=steps,
+                             on_event=None, confirm=None, plan_mode=False,
+                             interrupt_event=self.interrupt_event,
+                             allowed_tools=allowed, subagent_depth=self.subagent_depth + 1)
+        try:
+            result = sub_loop.run(prompt)
+        except Exception as e:  # noqa: BLE001 —— 子 agent 异常转为结果，不崩父循环
+            result = {"status": "error", "message": f"{type(e).__name__}: {e}"}
+        finally:
+            self.tool_ctx.on_output = parent_on_output
+        status = result.get("status")
+        summary = result.get("summary") or result.get("message") or self._last_subagent_output(sub_ctx)
+        self._emit(SubagentResult(_next_subagent_id(), status, (summary or "")[:2000]))
+        return (summary or "")[:2000]
+
+    def _last_subagent_output(self, ctx: Context) -> str:
+        """子 agent 未正常 finish 时，取最后一条 assistant 内容兜底。"""
+        for m in reversed(ctx.messages):
+            if m.get("role") == "assistant" and m.get("content"):
+                return m["content"]
+        return "子agent未产出结果"
 
     def _interrupted(self, step: int):
         """中断检查：Web UI 请求中断时在步骤边界生效。"""
@@ -103,10 +175,9 @@ class AgentLoop:
             self._maybe_hint_finish(step)
             self._manage_context()
 
-            # 1. 调 LLM（流式）；规划阶段仅暴露只读工具
+            # 1. 调 LLM（流式）；按 allowed_tools / 规划阶段过滤暴露的工具
             content_parts, tool_calls_raw = [], []
-            schemas = ([s for s in tool_schemas() if s["function"]["name"] in PLAN_TOOLS]
-                       if self._plan_pending() else tool_schemas())
+            schemas = self._schemas()
             try:
                 for ev in self.llm.chat_stream(self.ctx.messages, tools=schemas):
                     if ev["type"] == "text":
@@ -186,6 +257,12 @@ class AgentLoop:
                     # 规划阶段拒绝一切写/执行类操作（计划批准前只允许只读探索）
                     result = {"ok": False,
                               "output": "规划阶段仅允许只读工具（read_file/list_dir/search/glob/git_status/git_diff），请等待计划批准后再执行"}
+                    self._emit(ToolResultEvent(a.call_id, a.name, False, result["output"]))
+                    self._append_tool_result(a, result, text_protocol)
+                    continue
+                if self.allowed_tools is not None and a.name not in self.allowed_tools:
+                    # 子 agent 只读防护：即便模型调用受限工具，也拒绝执行
+                    result = {"ok": False, "output": f"当前上下文仅允许工具：{sorted(self.allowed_tools)}"}
                     self._emit(ToolResultEvent(a.call_id, a.name, False, result["output"]))
                     self._append_tool_result(a, result, text_protocol)
                     continue

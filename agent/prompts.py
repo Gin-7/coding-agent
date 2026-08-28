@@ -19,6 +19,8 @@ def make_system_prompt(workspace) -> str:
 - 修改已有文件的局部内容优先用 edit_file（精确替换），避免整体重写
 - 长命令或复杂逻辑请先写成脚本文件，再执行脚本
 - 命令输出可能被截断（超 3000 字符），需要完整内容时用 read_file 读取文件
+- 长耗时命令（如 dev server、长构建、安装）用 start_background 后台执行，不阻塞其他工作；之后用 poll_background 查询、stop_background 停止
+- 需要并行探索/拆解大任务时，可用 spawn_subagent 把子任务交给独立的子 agent（默认只读）；子 agent 返回的结果会作为 tool 结果回传
 
 完成标准：
 - 任务真正完成后调用 finish 并给出简洁总结（做了什么、结果如何）

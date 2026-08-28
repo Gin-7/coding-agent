@@ -103,6 +103,40 @@ def test_plan_mode_rejected(tmp):
     assert result["status"] == "cancelled"
 
 
+def test_subagent_returns_result(tmp):
+    """子 agent：spawn 返回有界结果；只读防护使 run_command 被执行层拒绝。"""
+    from agent.context import Context
+    from agent.loop import AgentLoop
+    from agent.mock import MockLLM
+    from agent.prompts import make_system_prompt
+    from agent.tools import ToolContext, register_all
+    register_all()
+    ws = make_ws(tmp, "sub")
+    loop = AgentLoop(MockLLM(), Context(make_system_prompt(str(ws)), 56000), ToolContext(ws),
+                     max_steps=10, on_event=None)
+    result = loop._run_subagent("研究一下工作区", max_steps=5)
+    assert isinstance(result, str) and result
+    # 只读防护：子 agent 不允许 run_command（默认只读），工具 schema 已被过滤
+    sub = AgentLoop(MockLLM(), Context(make_system_prompt(str(ws)), 56000), ToolContext(ws),
+                    max_steps=5, on_event=None, allowed_tools={"read_file", "list_dir"})
+    names = [s["function"]["name"] for s in sub._schemas()]
+    assert "run_command" not in names and "read_file" in names
+
+
+def test_subagent_depth_guard(tmp):
+    from agent.context import Context
+    from agent.loop import AgentLoop
+    from agent.mock import MockLLM
+    from agent.prompts import make_system_prompt
+    from agent.tools import ToolContext, register_all
+    register_all()
+    ws = make_ws(tmp, "subdepth")
+    loop = AgentLoop(MockLLM(), Context(make_system_prompt(str(ws)), 56000), ToolContext(ws),
+                     max_steps=10, on_event=None, subagent_depth=2)
+    result = loop._run_subagent("x")
+    assert "嵌套深度" in result
+
+
 def main() -> int:
     return run_tests(globals())
 
