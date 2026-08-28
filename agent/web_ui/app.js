@@ -143,37 +143,78 @@ function addToolInline(name, args, parent) {
   return el;
 }
 
-/* ---------- 轻量 markdown 渲染（零依赖） ---------- */
+/* ---------- 轻量 markdown 渲染（零依赖，逐行解析） ---------- */
 function renderMarkdown(text) {
-  let s = esc(text.replace(/\n{2,}/g, "\n"));  // 压缩连续换行，气泡更紧凑
-  // 代码块（优先，含内部换行）
-  const blocks = [];
-  s = s.replace(/```([\s\S]*?)```/g, (m, c) => { blocks.push(c); return "\u0000B" + (blocks.length - 1) + "\u0000"; });
-  // 行内代码
-  s = s.replace(/`([^`]+)`/g, "<code class=\"md-inline\">$1</code>");
-  // 标题
-  s = s.replace(/^### (.+)$/gm, "<h4>$1</h4>");
-  s = s.replace(/^## (.+)$/gm, "<h3>$1</h3>");
-  s = s.replace(/^# (.+)$/gm, "<h2>$1</h2>");
-  // 加粗 / 斜体
-  s = s.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  s = s.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-  // 链接
-  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-  // 列表
-  s = s.replace(/^[-*] (.+)$/gm, "<li>$1</li>");
-  s = s.replace(/^\d+\. (.+)$/gm, "<li>$1</li>");
-  s = s.replace(/((?:<li>.*<\/li>\n?)+)/g, '<ul class="md-ul">$1</ul>');
-  // 段落（按空行切分）
-  s = s.split(/\n{2,}/).map(seg => {
-    const t = seg.trim();
-    if (!t) return "";
-    if (t.startsWith("\u0000B") || t.indexOf("<li>") >= 0 || t.startsWith("<h")) return t;
-    return "<p>" + t.replace(/\n/g, "<br>") + "</p>";
-  }).join("");
-  // 还原代码块
-  s = s.replace(/\u0000B(\d+)\u0000/g, (m, i) => '<pre class="md-code">' + blocks[+i] + "</pre>");
-  return s;
+  // 1) 换行归一：CRLF→LF；3+ 连续换行压成 2（保留段落分隔，去掉冗余空行）
+  let src = String(text)
+    .replace(/\r\n?/g, "\n")
+    .replace(/\n{3,}/g, "\n\n");
+  // 2) 去掉「夹在两个列表项之间」的空行，避免每个列表项被拆成独立 <ul>
+  src = src.replace(/^([-*] .*)\n\n(?=[-*] )/gm, "$1\n")
+           .replace(/^(\d+\. .*)\n\n(?=\d+\. )/gm, "$1\n");
+
+  const lines = src.split("\n");
+  const blocks = [];   // 代码块原文（稍后还原，避免被行内规则破坏）
+
+  // 行内：先转义，再套 加粗 / 斜体 / 行内代码 / 链接
+  const inline = (raw) => esc(raw)
+    .replace(/`([^`]+)`/g, '<code class="md-inline">$1</code>')
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/\*([^*]+)\*/g, "<em>$1</em>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+  let html = "";
+  let para = [];                 // 当前段落的若干行
+  let listBuf = [], listOrdered = false;
+  const flushPara = () => {
+    if (!para.length) return;
+    const t = para.join("\n").trim();
+    if (t) html += "<p>" + inline(t).replace(/\n/g, "<br>") + "</p>";
+    para = [];
+  };
+  const flushList = () => {
+    if (!listBuf.length) return;
+    html += (listOrdered ? '<ol class="md-ul">' : '<ul class="md-ul">')
+          + listBuf.map(li => "<li>" + inline(li) + "</li>").join("")
+          + (listOrdered ? "</ol>" : "</ul>");
+    listBuf = []; listOrdered = false;
+  };
+  const isItem = (l) => /^[-*] /.test(l) || /^\d+\.\s/.test(l);
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/\s+$/, "");        // 去尾部空白
+    const fence = line.match(/^```(.*)$/);
+    if (fence) {                                       // 代码块：整段抽取
+      flushPara(); flushList();
+      const buf = [];
+      while (++i < lines.length && !/^```/.test(lines[i])) buf.push(lines[i]);
+      blocks.push(buf.join("\n"));
+      html += "\u0000B" + (blocks.length - 1) + "\u0000";
+      continue;
+    }
+    let m;
+    if ((m = line.match(/^(#{1,4})\s+(.*)$/))) {       // 标题
+      flushPara(); flushList();
+      const h = Math.min(m[1].length + 1, 4);
+      html += `<h${h}>${inline(m[2])}</h${h}>`;
+      continue;
+    }
+    if (isItem(line)) {                                // 列表项（连续项合并为一个列表）
+      flushPara();
+      const ordered = /^\d+\.\s/.test(line);
+      if (listBuf.length && ordered !== listOrdered) flushList();
+      listOrdered = ordered;
+      listBuf.push(line.replace(/^[-*]\s+/, "").replace(/^\d+\.\s+/, ""));
+      continue;
+    }
+    if (line.trim() === "") { flushPara(); flushList(); continue; }  // 空行 = 段落边界
+    para.push(line);
+  }
+  flushPara(); flushList();
+
+  // 3) 还原代码块（仅转义，不再做行内 markdown）
+  html = html.replace(/\u0000B(\d+)\u0000/g, (m, i) => '<pre class="md-code">' + esc(blocks[+i]) + "</pre>");
+  return html;
 }
 function timeAgo(ms) {
   if (!ms) return "";
@@ -212,6 +253,7 @@ function render(ev, opts) {
       addSystem("step " + ev.step + "/" + ev.max_steps, "step", turn);
       break;
     case "ToolCallEvent": {
+      if (ev.name === "finish") break;   // finish 以正文气泡渲染，不画工具卡片
       const el = addToolInline(ev.name, ev.arguments, turn || chatCol);
       toolCards.set(ev.call_id, el);
       if (ev.name === "run_command") lastCmdToolEl = el;   // 命令实时输出归入该卡片展开详情
@@ -232,6 +274,7 @@ function render(ev, opts) {
       }
       break;
     case "ToolResultEvent": {
+      if (ev.name === "finish") { lastCmdToolEl = null; lastCommandPre = null; break; }  // finish 无工具卡片
       const el = toolCards.get(ev.call_id);
       if (el) {
         // 成功不单独着色（与工具描述同色），仅失败标红；结果只在展开详情中显示
@@ -258,10 +301,11 @@ function render(ev, opts) {
       break;
     case "ErrorEvent": addIconNote("warn", ev.message, "error", turn); break;
     case "FinishEvent": {
-      const b = document.createElement("div");
-      b.className = "bubble finish";
-      b.innerHTML = ic("checkCircle") + "<span>" + esc(ev.summary) + "</span>";
-      (turn || chatCol).appendChild(b); scrollToBottom();
+      // finish 不再作为工具卡片，直接以正文气泡呈现（与主体内容同款样式、支持 markdown）
+      const d = document.createElement("div");
+      d.className = "assistant-text";
+      d.innerHTML = renderMarkdown(ev.summary || "");
+      (turn || chatCol).appendChild(d); scrollToBottom();
       break;
     }
     case "Notice": addSystem(ev.message, "", turn); break;
@@ -278,7 +322,7 @@ function render(ev, opts) {
         setRunning(false);
         if (lastAssistant) lastAssistant.classList.remove("running");
       }
-      if (ev.status === "finished") addSystem("[完成] " + (ev.summary || ""), "ok", turn);
+      if (ev.status === "finished") addSystem("[完成]", "ok", turn);
       else if (ev.status !== "interrupted") addSystem("[" + ev.status + "] " + (ev.message || ""), "error", turn);
       if (ev.steps != null) {
         const u = ev.usage || {};
@@ -442,22 +486,47 @@ document.getElementById("btn-settings-rail").addEventListener("click", () => set
 document.getElementById("btn-right-collapse").addEventListener("click", () => setRightCollapsed(true, true));
 btnRightExpand.addEventListener("click", () => setRightCollapsed(false, true));
 
-/* ---------- 右侧文件栏宽度可拖拽 ---------- */
+/* ---------- 右侧文件栏宽度可拖拽 ----------
+   关闭态（只显示文件树）与打开态（预览文件）分别持久化宽度：
+   - agent-rp-width      未打开文件时的宽度
+   - agent-rp-width-open 打开文件预览时的宽度
+   打开文件再关闭后，侧边栏回到打开文件前的关闭态宽度。 */
+const RP_W_KEY = "agent-rp-width";
+const RP_W_OPEN_KEY = "agent-rp-width-open";
+const RP_VIEW_OPEN_KEY = "agent-rp-view-open";   // 当前正在预览的文件路径（刷新后可恢复）
+const RP_MIN = 180, RP_MAX = 900, RP_OPEN_MIN = 420;
+function getRpWidth(key, fallback) {
+  const w = parseInt(localStorage.getItem(key) || "", 10);
+  return Number.isFinite(w) && w >= RP_MIN && w <= RP_MAX ? w : fallback;
+}
+// 读内联目标宽度（不受 transition 动画中间帧干扰）；无内联时退回布局宽度
+function currentRpWidth() {
+  const w = parseInt((rightPanelEl.style.width || "").replace("px", ""), 10);
+  if (Number.isFinite(w) && w > 0) return w;
+  return Math.round(rightPanelEl.getBoundingClientRect().width);
+}
+function setRpWidth(key, px) {
+  if (Number.isFinite(px) && px >= RP_MIN && px <= RP_MAX) localStorage.setItem(key, String(Math.round(px)));
+}
+function persistCurrentRpWidth() {
+  const open = rightPanelEl.classList.contains("view-open");
+  setRpWidth(open ? RP_W_OPEN_KEY : RP_W_KEY, currentRpWidth());
+}
 (function initRpWidth() {
-  const w = parseInt(localStorage.getItem("agent-rp-width") || "", 10);
-  if (w >= 180 && w <= 640) rightPanelEl.style.width = w + "px";
+  const w = getRpWidth(RP_W_KEY, null);
+  if (w !== null) rightPanelEl.style.width = w + "px";
 })();
 rpResizer.addEventListener("mousedown", e => {
   if (rightPanelEl.classList.contains("collapsed")) return;
   e.preventDefault();
   const startX = e.clientX;
-  const startW = rightPanelEl.getBoundingClientRect().width;
+  const startW = currentRpWidth();
   rpResizer.classList.add("active");
   rightPanelEl.classList.add("resizing");
   document.body.classList.add("resizing");
   function onMove(ev) {
     const open = rightPanelEl.classList.contains("view-open");
-    const min = open ? 420 : 200, max = 640;
+    const min = open ? RP_OPEN_MIN : 200, max = RP_MAX;
     let nw = startW + (startX - ev.clientX);
     nw = Math.max(min, Math.min(max, nw));
     rightPanelEl.style.width = nw + "px";
@@ -466,8 +535,7 @@ rpResizer.addEventListener("mousedown", e => {
     rpResizer.classList.remove("active");
     rightPanelEl.classList.remove("resizing");
     document.body.classList.remove("resizing");
-    const finalW = Math.round(rightPanelEl.getBoundingClientRect().width);
-    localStorage.setItem("agent-rp-width", String(finalW));
+    persistCurrentRpWidth();   // 用内联终值，避开 transition 中间帧
     document.removeEventListener("mousemove", onMove);
     document.removeEventListener("mouseup", onUp);
   }
@@ -486,6 +554,15 @@ function applyTheme(t, persist) {
 }
 (function initTheme() { applyTheme(localStorage.getItem("agent-theme") || "dark", false); })();
 document.querySelectorAll('input[name="theme"]').forEach(r => r.addEventListener("change", () => applyTheme(r.value, true)));
+document.getElementById("model-input").addEventListener("change", e => {
+  saveSettings({ model: e.target.value.trim() });
+});
+document.getElementById("model-url-input").addEventListener("change", e => {
+  saveSettings({ model_url: e.target.value.trim() });
+});
+document.getElementById("model-key-input").addEventListener("change", e => {
+  saveSettings({ model_key: e.target.value.trim() });
+});
 
 /* ---------- 审批 ---------- */
 function showConfirm(name, desc) {
@@ -568,8 +645,10 @@ async function loadFiles() {
 }
 function ensureRpOpenMinWidth() {
   // 打开文件预览时，确保文件树 + 预览区都有基本空间（内联宽度可能压得很窄）
-  const w = rightPanelEl.getBoundingClientRect().width;
-  if (w < 420) rightPanelEl.style.width = "420px";
+  if (currentRpWidth() < RP_OPEN_MIN) {
+    rightPanelEl.style.width = RP_OPEN_MIN + "px";
+    persistCurrentRpWidth();   // 改宽后立即写回对应键，否则会与用户拖好的宽度不一致
+  }
 }
 async function openFile(rel) {
   try {
@@ -587,14 +666,38 @@ async function openFile(rel) {
     nameEl.textContent = d.name + (d.truncated ? "（已截断到前 4000 行）" : "");
     contentEl.textContent = d.content;
     document.getElementById("file-view").hidden = false;
+    const wasOpen = rightPanelEl.classList.contains("view-open");
+    if (!wasOpen) {
+      // 记录关闭态宽度（关闭预览时还原到该宽度）
+      const closedW = currentRpWidth();
+      localStorage.setItem(RP_W_KEY, String(closedW));
+    }
     rightPanelEl.classList.add("view-open");
+    if (!wasOpen) {
+      // 打开文件态宽度：优先用上次打开态宽度（已持久化），否则继承当前关闭态宽度，
+      // 并立即写入，避免「首次打开被 ensureRpOpenMinWidth 改宽却不持久」导致下次不一致
+      const savedOpen = getRpWidth(RP_W_OPEN_KEY, null);
+      const w = savedOpen !== null ? savedOpen : currentRpWidth();
+      rightPanelEl.style.width = w + "px";
+      localStorage.setItem(RP_W_OPEN_KEY, String(w));
+    }
     ensureRpOpenMinWidth();
+    // 持久化正在预览的文件路径，刷新页面后可自动恢复预览与宽度
+    localStorage.setItem(RP_VIEW_OPEN_KEY, rel);
   } catch (e) { }
 }
 document.getElementById("btn-file-up").addEventListener("click", () => { fileDir = parentOf(fileDir); loadFiles(); });
 document.getElementById("btn-file-view-close").addEventListener("click", () => {
   document.getElementById("file-view").hidden = true;
   rightPanelEl.classList.remove("view-open");
+  // 保存打开态宽度（用内联终值，避开 width .2s 过渡的中间帧）
+  const openW = currentRpWidth();
+  setRpWidth(RP_W_OPEN_KEY, openW);
+  // 回到打开文件前的关闭态宽度
+  const closedW = getRpWidth(RP_W_KEY, null);
+  if (closedW !== null) rightPanelEl.style.width = closedW + "px";
+  // 清除预览记录（刷新后不再自动恢复）
+  localStorage.removeItem(RP_VIEW_OPEN_KEY);
 });
 
 /* ---------- 工具（设置面板） ---------- */
@@ -617,7 +720,17 @@ async function loadSettings() {
     if (s.theme === "dark" || s.theme === "light") applyTheme(s.theme, false);
     if (typeof s.sidebar_collapsed === "boolean") setLeftCollapsed(s.sidebar_collapsed, false);
     if (typeof s.right_collapsed === "boolean") setRightCollapsed(s.right_collapsed, false);
+    if (typeof s.model === "string" && s.model.trim()) document.getElementById("model-input").value = s.model;
+    if (typeof s.model_url === "string") document.getElementById("model-url-input").value = s.model_url;
+    if (typeof s.model_key === "string") document.getElementById("model-key-input").value = s.model_key;
   } catch (e) { }
 }
 
-loadTree(); loadFiles(); loadTools(); loadSettings();
+loadTree(); loadFiles(); loadTools();
+loadSettings().then(() => {
+  // 刷新后恢复上次打开的文件预览与宽度（仅当右侧栏处于展开状态）
+  if (!rightPanelEl.classList.contains("collapsed")) {
+    const rel = localStorage.getItem(RP_VIEW_OPEN_KEY);
+    if (rel) openFile(rel);
+  }
+});

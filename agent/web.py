@@ -203,7 +203,7 @@ class WebAgentServer:
             data = json.loads(self.settings_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return {}
-        return {k: data[k] for k in ("theme", "sidebar_collapsed", "right_collapsed") if k in data}
+        return {k: data[k] for k in ("theme", "sidebar_collapsed", "right_collapsed", "model", "model_url", "model_key") if k in data}
 
     def _save_settings(self) -> None:
         try:
@@ -223,6 +223,12 @@ class WebAgentServer:
             for k in ("sidebar_collapsed", "right_collapsed"):
                 if isinstance(patch.get(k), bool):
                     self.settings[k] = patch[k]
+            if isinstance(patch.get("model"), str) and patch["model"].strip():
+                self.settings["model"] = patch["model"].strip()
+            if isinstance(patch.get("model_url"), str):
+                self.settings["model_url"] = patch["model_url"].strip()
+            if isinstance(patch.get("model_key"), str):
+                self.settings["model_key"] = patch["model_key"].strip()
             self._save_settings()
         return self.get_settings()
 
@@ -563,6 +569,11 @@ def build_handler(server: WebAgentServer):
             self.send_response(200)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(data)))
+            # 禁用缓存：静态资源每次都重新拉取，避免浏览器沿用旧的 index/app.js/style.css
+            # （否则前端改动即使加了 ?v 戳也可能因 HTML 本身被缓存而加载不到）
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Pragma", "no-cache")
+            self.send_header("Expires", "0")
             self.end_headers()
             self.wfile.write(data)
 
@@ -724,11 +735,17 @@ def _build_loop(workspace: Path, args, on_event, hub, web):
         from .llm import LLMClient
         cfg = Config(workspace, model=args.model, base_url=args.base_url, api_key=args.api_key,
                      max_steps=args.max_steps, max_context_tokens=args.budget)
-        if not cfg.api_key:
+        # 模型优先级：CLI 参数 > Web UI 设置 > .env/default
+        model_override = None if args.model else web.settings.get("model")
+        base_url = args.base_url or web.settings.get("model_url") or cfg.base_url
+        api_key = args.api_key or web.settings.get("model_key") or cfg.api_key
+        if not api_key:
             raise SystemExit(
                 "未找到 API key：请设置环境变量 AGENT_API_KEY / DEEPSEEK_API_KEY，"
-                "或在工作区 .env 中提供（.env 已被 .gitignore 排除，不会入库）。")
-        llm = LLMClient(base_url=cfg.base_url, api_key=cfg.api_key, model=cfg.model,
+                "或在工作区 .env 中提供，或在 Web 设置面板填写 API Key"
+                "（.env 已被 .gitignore 排除，不会入库）。")
+        llm = LLMClient(base_url=base_url, api_key=api_key,
+                        model=model_override or cfg.model,
                         temperature=cfg.temperature, max_tokens=cfg.max_tokens, timeout=cfg.timeout)
         budget = cfg.max_context_tokens
     confirm = web.confirm if (args.permission == "ask" or args.plan) else None

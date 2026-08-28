@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Coding Agent</title>
-<link rel="stylesheet" href="/style.css?v=8">
+<link rel="stylesheet" href="/style.css?v=25">
 </head>
 <body>
 <div id="middle">
@@ -34,7 +34,7 @@
     <div id="chat-header">
       <span class="dot"></span>
       <span id="chat-session-name">—</span>
-      <button id="btn-right-expand" class="icon-mini" hidden title="展开文件"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 6l6 6-6 6"/></svg></button>
+      <button id="btn-right-expand" class="icon-mini" hidden title="展开文件"><svg viewBox="0 0 24 24" width="16" height="16"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M15 6l-6 6 6 6"/></svg></button>
     </div>
     <div id="chat-scroll">
       <div id="empty">
@@ -49,7 +49,7 @@
         <div class="input-box">
           <textarea id="input" rows="1" placeholder="输入任务，Enter 发送，Shift+Enter 换行"></textarea>
           <button id="btn-run" title="发送 / 停止">
-            <span class="ic-send"><svg viewBox="0 0 24 24"><path d="M3 11l18-8-8 18-2-8-8-2z" fill="currentColor"/></svg></span>
+            <span class="ic-send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M12 5l-6 6M12 5l6 6"/></svg></span>
             <span class="ic-stop"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg></span>
           </button>
         </div>
@@ -89,6 +89,7 @@
       <div class="settings-title">设置</div>
       <button class="st active" data-tab="appearance">外观</button>
       <button class="st" data-tab="tools">工具</button>
+      <button class="st" data-tab="model">模型</button>
       <button class="st" data-tab="about">关于</button>
     </div>
     <div class="settings-content">
@@ -100,6 +101,23 @@
         </div>
       </div>
       <div id="tab-tools" class="stab"><h4>工具</h4><div id="tools" class="tools-grid"></div></div>
+      <div id="tab-model" class="stab">
+        <h4>模型</h4>
+        <div class="field-row">
+          <label class="field-label" for="model-input">模型名称</label>
+          <input id="model-input" class="settings-input" placeholder="如 deepseek-chat" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field-row">
+          <label class="field-label" for="model-url-input">Base URL</label>
+          <input id="model-url-input" class="settings-input" placeholder="如 https://api.deepseek.com/v1" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="field-row">
+          <label class="field-label" for="model-key-input">API Key</label>
+          <input id="model-key-input" class="settings-input" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false">
+        </div>
+
+        <p class="field-hint">设置后下一次运行生效。模型名 / Base URL / API Key 会优先于工作区 .env 中的同名配置；留空则沿用 .env。API Key 以明文保存在本地 .agent-settings.json，请勿在共享环境使用。</p>
+      </div>
       <div id="tab-about" class="stab"><h4>关于</h4><p class="about-text">Coding Agent · 自研编程智能体<br>事件驱动架构 · 零框架依赖</p></div>
     </div>
   </div>
@@ -131,6 +149,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=2"></script>
+<script src="/app.js?v=18"></script>
 </body>
 </html>
