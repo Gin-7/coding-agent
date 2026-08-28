@@ -344,6 +344,22 @@ class WebAgentServer:
         msgs = load_messages_for_session(path) if path.exists() else None
         return {"filename": filename, "messages": msgs or []}, 200
 
+    def session_events(self, filename: str):
+        """读取会话 JSONL 全量事件日志，供前端回放（与实时渲染完全一致）。"""
+        rec = self.workspace.get(filename)
+        if rec is None:
+            return {"error": "会话不存在"}, 404
+        path = rec.path(self.workspace.sessions_dir)
+        events = []
+        if path.exists():
+            for line in path.read_text(encoding="utf-8").splitlines():
+                try:
+                    obj = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                events.append(obj)
+        return {"filename": filename, "events": events}, 200
+
     # ---------- 运行 ----------
 
     def is_running(self) -> bool:
@@ -441,6 +457,46 @@ class WebAgentServer:
         rel_str = str(root.relative_to(self.workspace.root)).replace("\\", "/") or "."
         return {"path": rel_str, "entries": entries}, 200
 
+    def read_file_content(self, rel: str):
+        """读取工作区内某个文件的内容，供 Web UI 右侧预览。
+
+        做越界 / 非文件 / 超大 / 二进制 拦截；UTF-8 失败兜底 GBK→latin-1；
+        超 4000 行截断，避免一次性把超大文件灌进浏览器。
+        """
+        root = (self.workspace.root / rel).resolve()
+        try:
+            root.relative_to(self.workspace.root)
+        except ValueError:
+            return {"error": "路径越界"}, 403
+        if not root.is_file():
+            return {"error": "不是文件"}, 404
+        try:
+            size = root.stat().st_size
+        except OSError:
+            return {"error": "无法访问该文件"}, 403
+        # 超过 512KB 直接拦，避免卡顿
+        if size > 512 * 1024:
+            return {"error": "文件过大（>512KB），请在编辑器中打开", "size": size}, 413
+        data = root.read_bytes()
+        # 前 4KB 含空字节 → 视为二进制，不预览
+        if b"\x00" in data[:4096]:
+            return {"error": "二进制文件，无法预览"}, 415
+        try:
+            text = data.decode("utf-8")
+        except UnicodeDecodeError:
+            try:
+                text = data.decode("gbk", errors="replace")
+            except UnicodeDecodeError:
+                text = data.decode("latin-1", errors="replace")
+        MAX_LINES = 4000
+        lines = text.split("\n")
+        truncated = len(lines) > MAX_LINES
+        if truncated:
+            text = "\n".join(lines[:MAX_LINES])
+        rel_str = str(root.relative_to(self.workspace.root)).replace("\\", "/")
+        return {"path": rel_str, "name": root.name, "content": text,
+                "truncated": truncated, "size": size}, 200
+
 
 def fs_browse(path: str):
     """本地文件夹选择器：浏览服务器文件系统（path 为空时列出盘符）。"""
@@ -531,6 +587,10 @@ def build_handler(server: WebAgentServer):
                 rel = (query.get("path") or [""])[0]
                 data, code = server.workspace_files(rel)
                 self._json(data, code)
+            elif path == "/api/file":
+                rel = (query.get("path") or [""])[0]
+                data, code = server.read_file_content(rel)
+                self._json(data, code)
             elif path == "/api/fs/browse":
                 p = (query.get("path") or [""])[0]
                 data, code = fs_browse(p)
@@ -542,6 +602,10 @@ def build_handler(server: WebAgentServer):
             elif path == "/api/session/messages":
                 fn = (query.get("filename") or [""])[0]
                 data, code = server.session_messages(fn)
+                self._json(data, code)
+            elif path == "/api/session/events":
+                fn = (query.get("filename") or [""])[0]
+                data, code = server.session_events(fn)
                 self._json(data, code)
             elif path == "/api/settings":
                 self._json(server.get_settings())

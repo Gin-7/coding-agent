@@ -13,6 +13,7 @@ let assistantRaw = "";
 let turn = null;             // 当前 agent 对话合并框
 let lastActiveRoot = "";     // 上次活动工作区（用于文件树随工作区切换）
 const toolCards = new Map();
+let lastCmdToolEl = null;   // 最近一次 run_command 工具卡片（命令输出归入其展开详情）
 let fileDir = ".";
 let browseDir = "";
 let expandedRoots = new Set();
@@ -182,60 +183,12 @@ function timeAgo(ms) {
   if (d < 86400 * 1000) return Math.floor(d / 3600000) + " 小时前";
   return Math.floor(d / 86400000) + " 天前";
 }
-function isInjectedUserMsg(m) {
-  if (m.role !== "user") return false;
-  const c = (m.content || "").trim();
-  return /^(【规划阶段】|（提示：|请继续：|计划已批准|用户拒绝|【早期对话摘要】|【工具执行结果】|【工作区记忆】|\[工作区记忆\])/.test(c);
-}
-
-/* ---------- 会话历史转写 ---------- */
-function renderTranscript(msgs) {
-  chatCol.innerHTML = "";
-  let t = null, hasContent = false;
-  const transTools = new Map();
-  for (const m of msgs || []) {
-    if (m.role === "system" || isInjectedUserMsg(m)) continue;
-    if (m.role === "user") {
-      if (m.content !== undefined) addBubble("user", m.content);
-      t = makeTurn(); hasContent = true; continue;
-    }
-    if (m.role === "assistant") {
-      if (!t) t = makeTurn();
-      if (m.content) {
-        const el = document.createElement("div");
-        el.className = "assistant-text";
-        el.innerHTML = renderMarkdown(m.content);
-        t.appendChild(el);
-      }
-      for (const tc of m.tool_calls || []) {
-        const fn = tc.function || {};
-        let args = {};
-        try { args = JSON.parse(fn.arguments || "{}"); } catch (e) { args = {}; }
-        const el = addToolInline(fn.name || "tool", args, t);
-        if (tc.id) transTools.set(tc.id, el);
-      }
-      hasContent = true;
-      continue;
-    }
-    if (m.role === "tool") {
-      const el = m.tool_call_id ? transTools.get(m.tool_call_id) : null;
-      if (el) {
-        if (el._out) el._out.textContent = (m.content || "");
-      } else {
-        const note = document.createElement("div");
-        note.className = "tool-out-line";
-        note.textContent = (m.content || "").replace(/\s+/g, " ").slice(0, 100);
-        (t || chatCol).appendChild(note);
-      }
-      hasContent = true;
-    }
-  }
-  showEmpty(!hasContent);
-  scrollToBottom();
-}
-
-/* ---------- 事件渲染 ---------- */
-function render(ev) {
+/* ---------- 事件渲染（实时 / 回放共用同一函数） ---------- */
+/* 实时 SSE 与回放（重放全量事件日志）都走这里，保证两种视图 100% 一致。
+   opts.replay=true 时屏蔽交互副作用（审批弹窗改为注记、不在每次 RunResult
+   重刷文件树），并去掉流式“运行态”以呈现静态完成样式。 */
+function render(ev, opts) {
+  const replay = !!(opts && opts.replay);
   switch (ev.type) {
     case "UserMessage":
       showEmpty(false);
@@ -246,7 +199,7 @@ function render(ev) {
     case "TextDelta":
       if (!lastAssistant) {
         lastAssistant = document.createElement("div");
-        lastAssistant.className = "assistant-text running";
+        lastAssistant.className = "assistant-text" + (replay ? "" : " running");
         (turn || chatCol).appendChild(lastAssistant);
         assistantRaw = "";
       }
@@ -255,30 +208,46 @@ function render(ev) {
       scrollToBottom();
       break;
     case "StepEvent":
-      // 每个步骤的文字独立成块，避免上一步工具调用上方显示下一步文字
-      lastAssistant = null; lastCommandPre = null;
+      lastAssistant = null; lastCommandPre = null;   // 重置分段，使每步文本独立成块
       addSystem("step " + ev.step + "/" + ev.max_steps, "step", turn);
       break;
     case "ToolCallEvent": {
       const el = addToolInline(ev.name, ev.arguments, turn || chatCol);
       toolCards.set(ev.call_id, el);
+      if (ev.name === "run_command") lastCmdToolEl = el;   // 命令实时输出归入该卡片展开详情
       scrollToBottom();
       break;
     }
     case "CommandOutput":
-      if (!lastCommandPre) {
-        lastCommandPre = document.createElement("pre");
-        lastCommandPre.className = "cmd-output";
-        (turn || chatCol).appendChild(lastCommandPre);
+      // 命令实时输出归入 run_command 工具卡片的展开详情（不在消息气泡中直接显示）
+      if (lastCmdToolEl && lastCmdToolEl._out) {
+        lastCmdToolEl._out.textContent += ev.text; scrollToBottom();
+      } else {
+        if (!lastCommandPre) {
+          lastCommandPre = document.createElement("pre");
+          lastCommandPre.className = "cmd-output";
+          (turn || chatCol).appendChild(lastCommandPre);
+        }
+        lastCommandPre.textContent += ev.text; scrollToBottom();
       }
-      lastCommandPre.textContent += ev.text; scrollToBottom();
       break;
     case "ToolResultEvent": {
       const el = toolCards.get(ev.call_id);
       if (el) {
-        el.classList.add(ev.ok ? "ok" : "fail");
-        if (el._out) el._out.textContent = (ev.ok ? "✓ " : "✗ ") + ev.output;
+        // 成功不单独着色（与工具描述同色），仅失败标红；结果只在展开详情中显示
+        if (!ev.ok) el.classList.add("fail");
+        if (el._out) {
+          const s = el._out.textContent || "";
+          if (ev.name === "run_command" && s.length > 0) {
+            // 命令输出已流式写入，仅补一行退出状态，避免与 stdout 重复
+            const st = String(ev.output || "").split("\n")[0];
+            el._out.textContent = s + (st ? "\n" + st : "");
+          } else {
+            el._out.textContent = ev.output || s;
+          }
+        }
       }
+      lastCmdToolEl = null;
       lastCommandPre = null;
       break;
     }
@@ -296,11 +265,19 @@ function render(ev) {
       break;
     }
     case "Notice": addSystem(ev.message, "", turn); break;
-    case "AskConfirm": showConfirm(ev.name, ev.desc); break;
-    case "SessionsChanged": loadTree(); break;
+    case "AskConfirm":
+      // 回放时审批已发生，仅作注记；实时才弹窗等待
+      if (replay) addIconNote("warn", "审批点：" + ev.name + (ev.desc ? " — " + ev.desc : ""), "note", turn);
+      else showConfirm(ev.name, ev.desc);
+      break;
+    case "SessionsChanged":
+      if (!replay) loadTree();
+      break;
     case "RunResult":
-      setRunning(false);
-      if (lastAssistant) lastAssistant.classList.remove("running");
+      if (!replay) {
+        setRunning(false);
+        if (lastAssistant) lastAssistant.classList.remove("running");
+      }
       if (ev.status === "finished") addSystem("[完成] " + (ev.summary || ""), "ok", turn);
       else if (ev.status !== "interrupted") addSystem("[" + ev.status + "] " + (ev.message || ""), "error", turn);
       if (ev.steps != null) {
@@ -308,9 +285,25 @@ function render(ev) {
         addSystem("[统计] 步骤 " + ev.steps + " | 输入 " + (u.prompt || 0) + " / 输出 " + (u.completion || 0) + " tokens", "", turn);
       }
       lastAssistant = null; lastCommandPre = null; turn = null; assistantRaw = "";
-      loadTree(); loadFiles();
+      lastCmdToolEl = null;
+      if (!replay) { loadTree(); loadFiles(); }
       break;
   }
+}
+
+/* ---------- 回放：重放全量事件日志，复用 render ---------- */
+function replayEvents(events) {
+  chatCol.innerHTML = "";
+  turn = null; lastAssistant = null; lastCommandPre = null; assistantRaw = "";
+  lastCmdToolEl = null; toolCards.clear();
+  toolCards.clear();
+  for (const ev of events || []) {
+    if (ev && ev.type === "MessagesDump") continue;  // 仅快照，渲染用不到
+    render(ev, { replay: true });
+  }
+  if (lastAssistant) lastAssistant.classList.remove("running");
+  scrollToBottom();
+  loadFiles();  // 仅刷新文件面板；会话树由调用方负责（避免递归触发再次回放）
 }
 
 /* ---------- 侧边栏工作区 / 会话树 ---------- */
@@ -371,8 +364,8 @@ async function loadTree() {
     if (!dataLoadedOnce) {
       dataLoadedOnce = true;
       const d = await getJSON("/api/workspace");
-      const m = d.active ? await getJSON("/api/session/messages?filename=" + encodeURIComponent(d.active)) : null;
-      renderTranscript(m ? m.messages : []);
+      const m = d.active ? await getJSON("/api/session/events?filename=" + encodeURIComponent(d.active)) : null;
+      replayEvents(m ? m.events : []);
     }
     // 会话名头部 + 文件树随工作区切换
     const aw = list.find(w => w.is_active);
@@ -392,8 +385,8 @@ async function selectSession(root, filename) {
     const r2 = await fetch("/api/session/select", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filename }) });
     const d2 = await r2.json();
     if (d2.ok) {
-      const m = await getJSON("/api/session/messages?filename=" + encodeURIComponent(filename));
-      renderTranscript(m.messages || []);
+      const m = await getJSON("/api/session/events?filename=" + encodeURIComponent(filename));
+      replayEvents(m.events || []);
       loadTree(); loadFiles();
     } else {
       addSystem("⚠ " + (d2.message || "切换会话失败"), "error");
@@ -431,6 +424,7 @@ document.querySelectorAll(".st[data-tab]").forEach(btn => btn.addEventListener("
 // 收起 / 展开左右侧边栏
 const sidebarEl = document.getElementById("sidebar");
 const rightPanelEl = document.getElementById("right-panel");
+const rpResizer = document.getElementById("rp-resizer");
 const btnRightExpand = document.getElementById("btn-right-expand");
 function setLeftCollapsed(v, persist) {
   sidebarEl.classList.toggle("collapsed", v);
@@ -439,6 +433,7 @@ function setLeftCollapsed(v, persist) {
 function setRightCollapsed(v, persist) {
   rightPanelEl.classList.toggle("collapsed", v);
   btnRightExpand.hidden = !v;
+  rpResizer.hidden = v;
   if (persist) saveSettings({ right_collapsed: v });
 }
 document.getElementById("btn-left-collapse").addEventListener("click", () => setLeftCollapsed(true, true));
@@ -446,6 +441,39 @@ document.getElementById("btn-left-expand").addEventListener("click", () => setLe
 document.getElementById("btn-settings-rail").addEventListener("click", () => settingsEl.classList.remove("hidden"));
 document.getElementById("btn-right-collapse").addEventListener("click", () => setRightCollapsed(true, true));
 btnRightExpand.addEventListener("click", () => setRightCollapsed(false, true));
+
+/* ---------- 右侧文件栏宽度可拖拽 ---------- */
+(function initRpWidth() {
+  const w = parseInt(localStorage.getItem("agent-rp-width") || "", 10);
+  if (w >= 180 && w <= 640) rightPanelEl.style.width = w + "px";
+})();
+rpResizer.addEventListener("mousedown", e => {
+  if (rightPanelEl.classList.contains("collapsed")) return;
+  e.preventDefault();
+  const startX = e.clientX;
+  const startW = rightPanelEl.getBoundingClientRect().width;
+  rpResizer.classList.add("active");
+  rightPanelEl.classList.add("resizing");
+  document.body.classList.add("resizing");
+  function onMove(ev) {
+    const open = rightPanelEl.classList.contains("view-open");
+    const min = open ? 420 : 200, max = 640;
+    let nw = startW + (startX - ev.clientX);
+    nw = Math.max(min, Math.min(max, nw));
+    rightPanelEl.style.width = nw + "px";
+  }
+  function onUp() {
+    rpResizer.classList.remove("active");
+    rightPanelEl.classList.remove("resizing");
+    document.body.classList.remove("resizing");
+    const finalW = Math.round(rightPanelEl.getBoundingClientRect().width);
+    localStorage.setItem("agent-rp-width", String(finalW));
+    document.removeEventListener("mousemove", onMove);
+    document.removeEventListener("mouseup", onUp);
+  }
+  document.addEventListener("mousemove", onMove);
+  document.addEventListener("mouseup", onUp);
+});
 
 /* ---------- 设置持久化（服务端 /api/settings，localStorage 仅作主题首帧缓存防闪屏） ---------- */
 function saveSettings(patch) {
@@ -531,10 +559,43 @@ async function loadFiles() {
       d.entries.map(e => `<div class="file-item ${e.dir ? "dir" : ""}" data-path="${esc(joinPath(fileDir, e.name))}">` +
         (e.dir ? ic("folder") : ic("file")) + "<span>" + esc(e.name) + "</span>" +
         (e.dir ? "" : " <span class=\"size\">(" + e.size + " B)</span>") + "</div>").join("");
-    document.querySelectorAll(".file-item").forEach(x => x.addEventListener("click", () => { if (x.dataset.path) { fileDir = x.dataset.path; loadFiles(); } }));
+    document.querySelectorAll(".file-item").forEach(x => x.addEventListener("click", () => {
+      if (!x.dataset.path) return;
+      if (x.classList.contains("dir")) { fileDir = x.dataset.path; loadFiles(); }   // 目录：进入
+      else { openFile(x.dataset.path); }                                            // 文件：预览
+    }));
+  } catch (e) { }
+}
+function ensureRpOpenMinWidth() {
+  // 打开文件预览时，确保文件树 + 预览区都有基本空间（内联宽度可能压得很窄）
+  const w = rightPanelEl.getBoundingClientRect().width;
+  if (w < 420) rightPanelEl.style.width = "420px";
+}
+async function openFile(rel) {
+  try {
+    const d = await getJSON("/api/file?path=" + encodeURIComponent(rel));
+    const nameEl = document.getElementById("file-view-name");
+    const contentEl = document.getElementById("file-view-content");
+    if (d.error) {
+      nameEl.textContent = "预览失败";
+      contentEl.textContent = "⚠ " + d.error;
+      document.getElementById("file-view").hidden = false;
+      rightPanelEl.classList.add("view-open");
+      ensureRpOpenMinWidth();
+      return;
+    }
+    nameEl.textContent = d.name + (d.truncated ? "（已截断到前 4000 行）" : "");
+    contentEl.textContent = d.content;
+    document.getElementById("file-view").hidden = false;
+    rightPanelEl.classList.add("view-open");
+    ensureRpOpenMinWidth();
   } catch (e) { }
 }
 document.getElementById("btn-file-up").addEventListener("click", () => { fileDir = parentOf(fileDir); loadFiles(); });
+document.getElementById("btn-file-view-close").addEventListener("click", () => {
+  document.getElementById("file-view").hidden = true;
+  rightPanelEl.classList.remove("view-open");
+});
 
 /* ---------- 工具（设置面板） ---------- */
 async function loadTools() {

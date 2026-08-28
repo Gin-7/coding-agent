@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Coding Agent</title>
-<link rel="stylesheet" href="/style.css">
+<link rel="stylesheet" href="/style.css?v=8">
 </head>
 <body>
 <div id="middle">
@@ -57,15 +57,28 @@
     </footer>
   </main>
 
+  <div id="rp-resizer" title="拖拽调整文件栏宽度"></div>
+
   <aside id="right-panel">
-    <div class="right-head">
-      <span>文件</span>
-      <div class="rh-actions">
-        <button id="btn-file-up" class="icon-mini" title="上级目录"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 19V5M5 12l7-7 7 7"/></svg></button>
-        <button id="btn-right-collapse" class="icon-mini" title="收起"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 6l6 6-6 6"/></svg></button>
+    <div class="rp-col rp-tree">
+      <div class="right-head">
+        <span>文件</span>
+        <div class="rh-actions">
+          <button id="btn-file-up" class="icon-mini" title="上级目录"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 19V5M5 12l7-7 7 7"/></svg></button>
+          <button id="btn-right-collapse" class="icon-mini" title="收起"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 6l6 6-6 6"/></svg></button>
+        </div>
       </div>
+      <div class="panel-body"><div id="files"></div></div>
     </div>
-    <div class="panel-body"><div id="files"></div></div>
+    <div class="rp-col rp-view" id="file-view" hidden>
+      <div class="right-head">
+        <span id="file-view-name" class="fv-name">—</span>
+        <div class="rh-actions">
+          <button id="btn-file-view-close" class="icon-mini" title="关闭预览"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M18 6L6 18M6 6l12 12"/></svg></button>
+        </div>
+      </div>
+      <pre id="file-view-content" class="file-view-content"></pre>
+    </div>
   </aside>
 </div>
 
@@ -118,6 +131,6 @@
   </div>
 </div>
 
-<script src="/app.js"></script>
+<script src="/app.js?v=2"></script>
 </body>
 </html>
