@@ -20,7 +20,8 @@ def make_system_prompt(workspace) -> str:
 - 长命令或复杂逻辑请先写成脚本文件，再执行脚本
 - 命令输出可能被截断（超 3000 字符），需要完整内容时用 read_file 读取文件
 - 长耗时命令（如 dev server、长构建、安装）用 start_background 后台执行，不阻塞其他工作；之后用 poll_background 查询、stop_background 停止
-- 需要并行探索/拆解大任务时，可用 spawn_subagent 把子任务交给独立的子 agent（默认只读）；子 agent 返回的结果会作为 tool 结果回传
+- 需要并行探索/拆解大任务时：spawn_subagent 派单个、spawn_subagents 派多个（同步等待合并）；如需"先派出去、主 agent 继续干活、稍后收结果"用 start_subagents + wait_subagents + list_subagent_batches
+- 子 agent 默认只读（写/执行会被拒绝）；除非确有必要才把 allow_write 设为 true，且要谨慎
 
 完成标准：
 - 任务真正完成后调用 finish 并给出简洁总结（做了什么、结果如何）

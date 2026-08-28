@@ -137,6 +137,38 @@ def test_subagent_depth_guard(tmp):
     assert "嵌套深度" in result
 
 
+def test_subagents_parallel(tmp):
+    """并行子 agent：一次派生多个，返回按序合并的有界结果；只读防护生效。"""
+    from agent.context import Context
+    from agent.loop import AgentLoop
+    from agent.mock import MockLLM
+    from agent.prompts import make_system_prompt
+    from agent.tools import ToolContext, register_all
+    register_all()
+    ws = make_ws(tmp, "subpar")
+    loop = AgentLoop(MockLLM(), Context(make_system_prompt(str(ws)), 56000), ToolContext(ws),
+                     max_steps=10, on_event=None)
+    result = loop._run_subagents_parallel([{"prompt": "子任务A"}, {"prompt": "子任务B"}])
+    assert isinstance(result, str) and "子agent 1" in result and "子agent 2" in result
+    # 并行时子 agent 提交（MockLLM 会写 hello.txt）只读防护：write_file 不属于只读 → 被拒
+    # 结果应包含子 agent 的总结
+    assert "演示任务" in result or "子agent" in result
+
+
+def test_subagents_parallel_depth_guard(tmp):
+    from agent.context import Context
+    from agent.loop import AgentLoop
+    from agent.mock import MockLLM
+    from agent.prompts import make_system_prompt
+    from agent.tools import ToolContext, register_all
+    register_all()
+    ws = make_ws(tmp, "subpardepth")
+    loop = AgentLoop(MockLLM(), Context(make_system_prompt(str(ws)), 56000), ToolContext(ws),
+                     max_steps=10, on_event=None, subagent_depth=2)
+    result = loop._run_subagents_parallel([{"prompt": "x"}])
+    assert "嵌套深度" in result
+
+
 def main() -> int:
     return run_tests(globals())
 

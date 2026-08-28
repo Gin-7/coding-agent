@@ -4,6 +4,7 @@
 终止条件：finish 工具 / 达最大步数 / 用户中断 / API 重试耗尽 / 模型连续空转。
 """
 import json
+import threading
 
 from .background import BackgroundManager
 from .compaction import compact_history
@@ -21,16 +22,19 @@ GUARDED_TOOLS = ("run_command", "git_commit")
 # 规划阶段 / 子 agent 默认只开放只读工具
 READONLY_TOOLS = ("read_file", "list_dir", "search", "glob", "git_status", "git_diff")
 PLAN_TOOLS = READONLY_TOOLS
-MAX_SUBAGENT_DEPTH = 2   # 子 agent 嵌套深度上限（不能再 spawn 的防线）
-MAX_SUBAGENT_STEPS = 20  # 子 agent 步数上限
+MAX_SUBAGENT_DEPTH = 2     # 子 agent 嵌套深度上限（不能再 spawn 的防线）
+MAX_SUBAGENT_STEPS = 20    # 子 agent 步数上限
+MAX_PARALLEL_SUBAGENTS = 4  # 并行子 agent 上限
 
 _subagent_counter = 0
+_subagent_lock = threading.Lock()
 
 
 def _next_subagent_id() -> str:
     global _subagent_counter
-    _subagent_counter += 1
-    return f"sub-{_subagent_counter}"
+    with _subagent_lock:
+        _subagent_counter += 1
+        return f"sub-{_subagent_counter}"
 
 
 class AgentLoop:
@@ -58,6 +62,12 @@ class AgentLoop:
         self.background.emit = self._bg_emit
         self.tool_ctx.background = self.background
         self.tool_ctx.subagent = self._run_subagent
+        self.tool_ctx.subagents = self._run_subagents_parallel
+        self.tool_ctx.start_subagents = self._start_subagents
+        self.tool_ctx.wait_subagents = self._wait_subagents
+        self.tool_ctx.list_subagent_batches = self._list_subagent_batches
+        self._sub_batches = {}   # 后台子 agent 批次：batch_id -> {threads, results, tasks}
+        self._batch_counter = 0
 
     def _bg_emit(self, ev: dict):
         t = ev.get("type")
@@ -76,17 +86,25 @@ class AgentLoop:
             base = [s for s in base if s["function"]["name"] in PLAN_TOOLS]
         return base
 
-    def _run_subagent(self, prompt: str, max_steps: int = 8, tools=None) -> str:
-        """运行一个独立的子 agent（同步），返回有界结果字符串。"""
-        if self.subagent_depth >= self.MAX_SUBAGENT_DEPTH:
-            return "达子 agent 嵌套深度上限，不再派生"
+    def _run_subagent_inner(self, prompt: str, max_steps: int, tools, allow_write: bool = False):
+        """运行单个子 agent（同步）。返回 (status, summary[:2000])。
+
+        每个子 agent 用**自己的 ToolContext**（共享工作区/后台管理），使各回调各归各、并行安全。
+        allow_write=False（默认）：硬只读 —— 忽略 tools 里的写/执行工具，最多只收窄只读集合；
+        allow_write=True：才允许 tools 指定的（或全部）工具。
+        """
         steps = max(1, min(int(max_steps or 8), MAX_SUBAGENT_STEPS))
-        allowed = set(tools) if tools else set(READONLY_TOOLS)
+        if allow_write:
+            allowed = set(tools) if tools else None   # None = 全部工具
+        else:
+            allowed = set(READONLY_TOOLS)             # 硬只读
+            if tools:
+                allowed = allowed & set(tools)        # tools 只能再收窄
         from .prompts import make_system_prompt
+        sub_tool_ctx = ToolContext(self.tool_ctx.workspace)
+        sub_tool_ctx.background = self.tool_ctx.background  # 共享后台管理
         sub_ctx = Context(make_system_prompt(self.tool_ctx.workspace), self.ctx.budget)
-        # 子 agent 共享 tool_ctx（工作区/后台管理），但其 __init__ 会覆盖 on_output，需保存并在跑完后恢复
-        parent_on_output = self.tool_ctx.on_output
-        sub_loop = AgentLoop(self.llm, sub_ctx, self.tool_ctx, max_steps=steps,
+        sub_loop = AgentLoop(self.llm, sub_ctx, sub_tool_ctx, max_steps=steps,
                              on_event=None, confirm=None, plan_mode=False,
                              interrupt_event=self.interrupt_event,
                              allowed_tools=allowed, subagent_depth=self.subagent_depth + 1)
@@ -94,12 +112,97 @@ class AgentLoop:
             result = sub_loop.run(prompt)
         except Exception as e:  # noqa: BLE001 —— 子 agent 异常转为结果，不崩父循环
             result = {"status": "error", "message": f"{type(e).__name__}: {e}"}
-        finally:
-            self.tool_ctx.on_output = parent_on_output
         status = result.get("status")
         summary = result.get("summary") or result.get("message") or self._last_subagent_output(sub_ctx)
-        self._emit(SubagentResult(_next_subagent_id(), status, (summary or "")[:2000]))
-        return (summary or "")[:2000]
+        return status, (summary or "")[:2000]
+
+    def _run_subagent(self, prompt: str, max_steps: int = 8, tools=None, allow_write: bool = False) -> str:
+        """运行一个独立的子 agent（同步），返回有界结果字符串。"""
+        if self.subagent_depth >= self.MAX_SUBAGENT_DEPTH:
+            return "达子 agent 嵌套深度上限，不再派生"
+        status, summary = self._run_subagent_inner(prompt, max_steps, tools, allow_write)
+        self._emit(SubagentResult(_next_subagent_id(), status, summary))
+        return summary
+
+    def _run_subagents_parallel(self, tasks) -> str:
+        """并行运行多个子 agent，返回合并的有界结果。tasks: [{prompt, max_steps?, tools?, allow_write?}]"""
+        if self.subagent_depth >= self.MAX_SUBAGENT_DEPTH:
+            return "达子 agent 嵌套深度上限，不再派生"
+        if not tasks:
+            return "任务列表为空"
+        tasks = tasks[:MAX_PARALLEL_SUBAGENTS]
+        results = [None] * len(tasks)
+
+        def worker(i, t):
+            try:
+                status, summary = self._run_subagent_inner(
+                    t.get("prompt", ""), t.get("max_steps", 8), t.get("tools"), bool(t.get("allow_write")))
+                self._emit(SubagentResult(_next_subagent_id(), status, summary))
+                results[i] = summary
+            except Exception as e:  # noqa: BLE001
+                results[i] = f"子agent#{i + 1} 失败: {type(e).__name__}: {e}"
+
+        threads = []
+        for i, t in enumerate(tasks):
+            th = threading.Thread(target=worker, args=(i, t), daemon=True)
+            th.start()
+            threads.append(th)
+        for th in threads:
+            th.join()
+        parts = [f"--- 子agent {i + 1} ---\n{results[i]}" for i in range(len(tasks)) if results[i]]
+        if not parts:
+            return "所有子agent均无结果"
+        return "\n".join(parts)[:4000]
+
+    # ---------- 后台子 agent（异步批次：主 agent 可先去做别的，稍后 wait 收结果） ----------
+
+    def _start_subagents(self, tasks) -> str:
+        """异步启动一组并行子 agent，返回批次 id（不阻塞主 agent）。"""
+        if self.subagent_depth >= self.MAX_SUBAGENT_DEPTH:
+            return "达子 agent 嵌套深度上限，不再派生"
+        if not tasks:
+            return "任务列表为空"
+        tasks = tasks[:MAX_PARALLEL_SUBAGENTS]
+        self._batch_counter += 1
+        batch_id = f"sub-batch-{self._batch_counter}"
+        results = [None] * len(tasks)
+        threads = []
+
+        def worker(i, t):
+            try:
+                status, summary = self._run_subagent_inner(
+                    t.get("prompt", ""), t.get("max_steps", 8), t.get("tools"), bool(t.get("allow_write")))
+                self._emit(SubagentResult(_next_subagent_id(), status, summary))
+                results[i] = summary
+            except Exception as e:  # noqa: BLE001
+                results[i] = f"子agent#{i + 1} 失败: {type(e).__name__}: {e}"
+
+        for i, t in enumerate(tasks):
+            th = threading.Thread(target=worker, args=(i, t), daemon=True)
+            th.start()
+            threads.append(th)
+        self._sub_batches[batch_id] = {"tasks": tasks, "results": results, "threads": threads}
+        return batch_id
+
+    def _wait_subagents(self, batch_id: str) -> str:
+        """等待某后台批次完成并返回合并结果（阻塞）。"""
+        batch = self._sub_batches.get(batch_id)
+        if batch is None:
+            return "子agent批次不存在"
+        for th in batch["threads"]:
+            th.join()
+        parts = [f"--- 子agent {i + 1} ---\n{batch['results'][i]}"
+                 for i in range(len(batch["tasks"])) if batch["results"][i]]
+        return "\n".join(parts)[:4000] if parts else "该批次无结果"
+
+    def _list_subagent_batches(self) -> str:
+        if not self._sub_batches:
+            return "没有进行中的子agent批次"
+        lines = []
+        for bid, b in self._sub_batches.items():
+            running = sum(1 for th in b["threads"] if th.is_alive())
+            lines.append(f"{bid} [{running}/{len(b['tasks'])} 运行中]")
+        return "\n".join(lines)
 
     def _last_subagent_output(self, ctx: Context) -> str:
         """子 agent 未正常 finish 时，取最后一条 assistant 内容兜底。"""
