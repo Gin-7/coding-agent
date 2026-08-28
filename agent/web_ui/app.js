@@ -22,7 +22,7 @@ let activeRoot = "";
 function setRunning(v) {
   running = v;
   btnRun.classList.toggle("running", v);
-  btnRun.querySelector(".btn-label").textContent = v ? "中断" : "发送";
+  btnRun.title = v ? "停止" : "发送";
 }
 function scrollToBottom() {
   const near = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 260;
@@ -85,9 +85,66 @@ function addIconNote(icon, text, cls, parent) {
   return b;
 }
 
+/* ---------- 每工具的矢量图标 ---------- */
+const TOOL_ICON = {
+  read_file: '<svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M6 2h8l6 6v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2z"/><path fill="none" stroke="currentColor" stroke-width="1.8" d="M8 13h8M8 17h6"/></svg>',
+  write_file: '<svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M12 20h9"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>',
+  edit_file: '<svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 20h4l10-10-4-4L4 16zM13 6l4 4"/></svg>',
+  undo_file: '<svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M9 14L4 9l5-5"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M4 9h10a6 6 0 0 1 6 6v1"/></svg>',
+  run_command: '<svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 6l6 6-6 6M12 19h8"/></svg>',
+  git_status: '<svg viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.4" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="18" cy="6" r="2.4" fill="none" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="18" r="2.4" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" d="M6 8.4V14a4 4 0 0 0 4 4h2"/></svg>',
+  git_diff: '<svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M7 4v16M7 8h6M7 16h6M17 4v16"/></svg>',
+  git_commit: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" d="M3 12h5.5M15.5 12H21"/></svg>',
+  git_log: '<svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M6 4h12M6 10h12M6 16h12"/></svg>',
+  glob: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M21 21l-4.3-4.3"/></svg>',
+  search: '<svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" d="M21 21l-4.3-4.3"/></svg>',
+  list_dir: '<svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/></svg>',
+  finish: '<svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M20 6L9 17l-5-5"/></svg>',
+};
+function toolIcon(name) { return TOOL_ICON[name] || ICON.wrench; }
+function toolBrief(name, args) {
+  if (!args) return "";
+  for (const k of ["path", "command", "pattern", "message", "file"]) {
+    if (args[k] !== undefined && args[k] !== "") {
+      const v = String(args[k]);
+      return v.length > 40 ? v.slice(0, 40) + "…" : v;
+    }
+  }
+  const v = Object.values(args)[0];
+  return v !== undefined ? String(v).slice(0, 40) : "";
+}
+function addToolInline(name, args, parent) {
+  const el = document.createElement("div");
+  el.className = "tool-inline";
+  el.innerHTML = '<span class="tool-ic">' + toolIcon(name) + '</span><span class="tool-name">' + esc(name) + '</span>';
+  if (args && Object.keys(args).length) {
+    const b = document.createElement("span");
+    b.className = "tool-brief";
+    b.textContent = toolBrief(name, args);
+    el.appendChild(b);
+  }
+  const caret = document.createElement("span");
+  caret.className = "tool-caret";
+  el.appendChild(caret);
+  const details = document.createElement("div");
+  details.className = "tool-details";
+  const argsPre = document.createElement("pre");
+  argsPre.className = "tool-args";
+  argsPre.textContent = args && Object.keys(args).length ? JSON.stringify(args, null, 2) : "";
+  const outPre = document.createElement("pre");
+  outPre.className = "tool-out-detail";
+  details.appendChild(argsPre);
+  details.appendChild(outPre);
+  el.appendChild(details);
+  el.addEventListener("click", () => el.classList.toggle("expanded"));
+  (parent || chatCol).appendChild(el);
+  el._out = outPre;
+  return el;
+}
+
 /* ---------- 轻量 markdown 渲染（零依赖） ---------- */
 function renderMarkdown(text) {
-  let s = esc(text);
+  let s = esc(text.replace(/\n{2,}/g, "\n"));  // 压缩连续换行，气泡更紧凑
   // 代码块（优先，含内部换行）
   const blocks = [];
   s = s.replace(/```([\s\S]*?)```/g, (m, c) => { blocks.push(c); return "\u0000B" + (blocks.length - 1) + "\u0000"; });
@@ -135,6 +192,7 @@ function isInjectedUserMsg(m) {
 function renderTranscript(msgs) {
   chatCol.innerHTML = "";
   let t = null, hasContent = false;
+  const transTools = new Map();
   for (const m of msgs || []) {
     if (m.role === "system" || isInjectedUserMsg(m)) continue;
     if (m.role === "user") {
@@ -151,26 +209,24 @@ function renderTranscript(msgs) {
       }
       for (const tc of m.tool_calls || []) {
         const fn = tc.function || {};
-        const card = document.createElement("div");
-        card.className = "tool-card";
-        const head = document.createElement("div");
-        head.className = "tool-head";
-        head.innerHTML = '<span class="caret">' + ICON.chevron + '</span><span class="tool-ic">' + ICON.wrench + '</span><span>' + esc(fn.name || "tool") + '</span>';
-        const argsPre = document.createElement("pre");
-        argsPre.className = "tool-args";
-        try { argsPre.textContent = safeJson(JSON.parse(fn.arguments || "{}")); } catch (e) { argsPre.textContent = fn.arguments || ""; }
-        head.addEventListener("click", () => card.classList.toggle("open"));
-        card.appendChild(head); card.appendChild(argsPre);
-        t.appendChild(card);
+        let args = {};
+        try { args = JSON.parse(fn.arguments || "{}"); } catch (e) { args = {}; }
+        const el = addToolInline(fn.name || "tool", args, t);
+        if (tc.id) transTools.set(tc.id, el);
       }
       hasContent = true;
       continue;
     }
     if (m.role === "tool") {
-      const note = document.createElement("div");
-      note.className = "note";
-      note.textContent = "↳ " + (m.content || "").slice(0, 120);
-      (t || chatCol).appendChild(note);
+      const el = m.tool_call_id ? transTools.get(m.tool_call_id) : null;
+      if (el) {
+        if (el._out) el._out.textContent = (m.content || "");
+      } else {
+        const note = document.createElement("div");
+        note.className = "tool-out-line";
+        note.textContent = (m.content || "").replace(/\s+/g, " ").slice(0, 100);
+        (t || chatCol).appendChild(note);
+      }
       hasContent = true;
     }
   }
@@ -204,18 +260,9 @@ function render(ev) {
       addSystem("step " + ev.step + "/" + ev.max_steps, "step", turn);
       break;
     case "ToolCallEvent": {
-      const card = document.createElement("div");
-      card.className = "tool-card";
-      const head = document.createElement("div");
-      head.className = "tool-head";
-      head.innerHTML = '<span class="caret">' + ICON.chevron + '</span><span class="tool-ic">' + ICON.wrench + '</span><span>' + esc(ev.name) + '</span>';
-      const argsPre = document.createElement("pre");
-      argsPre.className = "tool-args"; argsPre.textContent = safeJson(ev.arguments);
-      const resultDiv = document.createElement("pre");
-      resultDiv.className = "tool-result"; resultDiv.style.display = "none";
-      head.addEventListener("click", () => card.classList.toggle("open"));
-      card.appendChild(head); card.appendChild(argsPre); card.appendChild(resultDiv);
-      (turn || chatCol).appendChild(card); toolCards.set(ev.call_id, { card, resultDiv }); scrollToBottom();
+      const el = addToolInline(ev.name, ev.arguments, turn || chatCol);
+      toolCards.set(ev.call_id, el);
+      scrollToBottom();
       break;
     }
     case "CommandOutput":
@@ -227,11 +274,10 @@ function render(ev) {
       lastCommandPre.textContent += ev.text; scrollToBottom();
       break;
     case "ToolResultEvent": {
-      const t = toolCards.get(ev.call_id);
-      if (t) {
-        t.resultDiv.textContent = (ev.ok ? "✓ " : "✗ ") + ev.output;
-        t.resultDiv.style.display = "";
-        t.card.dataset.ok = ev.ok ? "ok" : "fail";
+      const el = toolCards.get(ev.call_id);
+      if (el) {
+        el.classList.add(ev.ok ? "ok" : "fail");
+        if (el._out) el._out.textContent = (ev.ok ? "✓ " : "✗ ") + ev.output;
       }
       lastCommandPre = null;
       break;
@@ -262,17 +308,9 @@ function render(ev) {
         addSystem("[统计] 步骤 " + ev.steps + " | 输入 " + (u.prompt || 0) + " / 输出 " + (u.completion || 0) + " tokens", "", turn);
       }
       lastAssistant = null; lastCommandPre = null; turn = null; assistantRaw = "";
-      updateLastActive();
       loadTree(); loadFiles();
       break;
   }
-}
-async function updateLastActive() {
-  try {
-    const meta = await getJSON("/api/workspace");
-    const s = (meta.sessions || []).find(x => x.filename === meta.active);
-    document.getElementById("chat-last-active").textContent = s && s.mtime ? timeAgo(s.mtime * 1000) : "";
-  } catch (e) { }
 }
 
 /* ---------- 侧边栏工作区 / 会话树 ---------- */
@@ -315,7 +353,14 @@ async function loadTree() {
       for (const s of ws.sessions) {
         const se = document.createElement("div");
         se.className = "tree-session" + ((ws.is_active && s.filename === ws.active) ? " active" : "");
-        se.textContent = s.name;
+        const name = document.createElement("span");
+        name.className = "session-name";
+        name.textContent = s.name;
+        se.appendChild(name);
+        const time = document.createElement("span");
+        time.className = "session-time";
+        time.textContent = s.mtime ? timeAgo(s.mtime * 1000) : "";
+        se.appendChild(time);
         se.title = s.filename;
         se.addEventListener("click", () => selectSession(ws.root, s.filename));
         sessionsEl.appendChild(se);
@@ -333,7 +378,6 @@ async function loadTree() {
     const aw = list.find(w => w.is_active);
     const as = aw && (aw.sessions || []).find(s => s.filename === aw.active);
     updateChatHeader(as ? as.name : "—");
-    document.getElementById("chat-last-active").textContent = as && as.mtime ? timeAgo(as.mtime * 1000) : "";
     if (activeRoot && activeRoot !== lastActiveRoot) { onWorkspaceChanged(); }
   } catch (e) { }
 }
@@ -384,6 +428,15 @@ document.querySelectorAll(".st[data-tab]").forEach(btn => btn.addEventListener("
   document.querySelectorAll(".stab").forEach(t => t.classList.remove("active"));
   document.getElementById("tab-" + btn.dataset.tab).classList.add("active");
 }));
+// 收起 / 展开左右侧边栏
+const sidebarEl = document.getElementById("sidebar");
+const rightPanelEl = document.getElementById("right-panel");
+const btnRightExpand = document.getElementById("btn-right-expand");
+document.getElementById("btn-left-collapse").addEventListener("click", () => sidebarEl.classList.add("collapsed"));
+document.getElementById("btn-left-expand").addEventListener("click", () => sidebarEl.classList.remove("collapsed"));
+document.getElementById("btn-settings-rail").addEventListener("click", () => settingsEl.classList.remove("hidden"));
+document.getElementById("btn-right-collapse").addEventListener("click", () => { rightPanelEl.classList.add("collapsed"); btnRightExpand.hidden = false; });
+btnRightExpand.addEventListener("click", () => { rightPanelEl.classList.remove("collapsed"); btnRightExpand.hidden = true; });
 
 /* ---------- 主题（仅设置面板） ---------- */
 function applyTheme(t) {
