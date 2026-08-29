@@ -28,6 +28,9 @@ class LLMClient:
         max_tokens: int = 4096,
         timeout: int = 120,
         max_retries: int = 3,
+        model_resolver: Optional[callable] = None,
+        base_url_resolver: Optional[callable] = None,
+        api_key_resolver: Optional[callable] = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -36,12 +39,39 @@ class LLMClient:
         self.max_tokens = max_tokens
         self.timeout = timeout
         self.max_retries = max_retries
+        # 热切换：resolver 在每次请求时实时解析最新值（CLI 进程/无面板时留空即退化为固定值）
+        self.model_resolver = model_resolver
+        self.base_url_resolver = base_url_resolver
+        self.api_key_resolver = api_key_resolver
+
+    # ---------- 热切换解析 ----------
+
+    def _cur_model(self) -> str:
+        if self.model_resolver is not None:
+            v = self.model_resolver()
+            if v:
+                return v
+        return self.model
+
+    def _cur_base_url(self) -> str:
+        if self.base_url_resolver is not None:
+            v = self.base_url_resolver()
+            if v:
+                return v.rstrip("/")
+        return self.base_url
+
+    def _cur_api_key(self) -> str:
+        if self.api_key_resolver is not None:
+            v = self.api_key_resolver()
+            if v:
+                return v
+        return self.api_key
 
     # ---------- 内部 ----------
 
     def _payload(self, messages: list, tools: Optional[list], stream: bool) -> dict:
         payload: dict[str, Any] = {
-            "model": self.model,
+            "model": self._cur_model(),
             "messages": messages,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
@@ -55,9 +85,9 @@ class LLMClient:
         return payload
 
     def _post(self, payload: dict) -> requests.Response:
-        url = f"{self.base_url}/chat/completions"
+        url = f"{self._cur_base_url()}/chat/completions"
         headers = {
-            "Authorization": f"Bearer {self.api_key}",
+            "Authorization": f"Bearer {self._cur_api_key()}",
             "Content-Type": "application/json",
         }
         try:

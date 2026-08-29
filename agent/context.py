@@ -21,9 +21,10 @@ def estimate_tokens(text: str) -> int:
 
 
 class Context:
-    def __init__(self, system_prompt: str, budget: int):
+    def __init__(self, system_prompt: str, budget: int, budget_resolver: Optional[callable] = None):
         self.messages: list = [{"role": "system", "content": system_prompt}]
         self.budget = budget
+        self.budget_resolver = budget_resolver
         self.real_usage = {"prompt": 0, "completion": 0, "total": 0}
 
     # ---------- 写入 ----------
@@ -49,8 +50,16 @@ class Context:
                 total += estimate_tokens(tc.get("function", {}).get("arguments") or "")
         return total
 
+    def _cur_budget(self) -> int:
+        """实时预算：resolver 返回正值则用当前模型窗口推导值，否则退化为构造时固定值。"""
+        if self.budget_resolver is not None:
+            v = self.budget_resolver()
+            if v and v > 0:
+                return v
+        return self.budget
+
     def needs_trim(self) -> bool:
-        return self.estimated_tokens() > self.budget
+        return self.estimated_tokens() > self._cur_budget()
 
     # ---------- 裁剪 ----------
 

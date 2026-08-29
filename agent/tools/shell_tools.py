@@ -19,12 +19,30 @@ MAX_COMMAND_CHARS = 7000
 DEFAULT_TIMEOUT = 120
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 
-# (正则, 拦截原因)：危险命令黑名单，命中即拒绝执行（权限模型：工作区内自动 + 黑名单）
-BLACKLIST = [
-    (r"^\s*(del|erase|rmdir|rd)\b", "危险删除命令"),
+# 两级危险命令管控：
+#   CATASTROPHIC —— 灾难性命令（递归/强制/通配整目录/磁盘级），任何模式、即使人工批准也硬拦截。
+#   DESTRUCTIVE  —— 破坏性删除（特定文件/目录），需人工批准：ask 模式审批后放行；
+#                   auto 模式无人批准则拒绝；plan 模式本就只读拦截。
+# 设计意图：避免“用户已在批准模式明确同意删某个文件”仍被一刀切黑名单挡掉（原 bug）。
+CATASTROPHIC = [
+    # 递归/强制删除
+    (r"^\s*(del|erase)\b(?=.*\s/[sqf]\b)", "递归/强制删除"),
+    (r"^\s*rm\b(?=.*(-r|--recursive|-rf|-fr)\b)", "递归/强制删除"),
+    # 通配 / 整目录删除
+    (r"^\s*(del|erase)\s+.*(\*\.\*|\*/\*|\*\\|\*$)", "通配删除"),
+    (r"^\s*rm\b.*(\*\.|\s/\*)", "通配删除"),
+    # 递归删除目录
+    (r"^\s*(rmdir|rd)\b(?=.*/[sqf]\b)", "递归删除目录"),
+    # 磁盘 / 系统级灾难
     (r"^\s*format\b", "磁盘格式化"),
-    (r"^\s*rm\s+-rf", "危险删除命令"),
     (r"^\s*shutdown\b", "关机/重启"),
+    (r"^\s*(mkfs|diskpart|dd\s+if=)", "磁盘写入"),
+]
+
+DESTRUCTIVE = [
+    (r"^\s*(del|erase)\b", "删除文件"),
+    (r"^\s*rm\b", "删除文件"),
+    (r"^\s*(rmdir|rd)\b", "删除目录"),
 ]
 
 
@@ -37,11 +55,16 @@ def _decode(b: bytes) -> str:
     return b.decode("utf-8", errors="replace")
 
 
-def _check_blacklist(command: str) -> Optional[str]:
-    for pat, why in BLACKLIST:
+def _check_blacklist(command: str, patterns) -> Optional[str]:
+    for pat, why in patterns:
         if re.search(pat, command, re.IGNORECASE):
             return why
     return None
+
+
+def is_destructive(command: str) -> bool:
+    """命令是否为破坏性删除（需人工批准，非灾难性则放行）。"""
+    return bool(_check_blacklist(command, DESTRUCTIVE))
 
 
 def _kill_tree(proc) -> None:
@@ -60,7 +83,7 @@ def tool_run_command(tool_ctx, command: str, timeout: int = DEFAULT_TIMEOUT, wor
         return "命令为空"
     if len(command) > MAX_COMMAND_CHARS:
         return f"命令过长（>{MAX_COMMAND_CHARS} 字符）：请把长操作写成脚本文件后执行"
-    why = _check_blacklist(command)
+    why = _check_blacklist(command, CATASTROPHIC)
     if why:
         raise ToolRejected(f"已拦截危险命令（{why}）：{command}")
     timeout = max(1, min(int(timeout), 600))

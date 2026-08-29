@@ -16,6 +16,7 @@ import urllib.parse
 import datetime as _dt
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from .config import find_env_file
 
 WEB_UI_DIR = Path(__file__).resolve().parent / "web_ui"
 SESSIONS_DIR_NAME = "sessions"
@@ -144,6 +145,7 @@ class WebAgentServer:
         self.default_root = workspace.root
         self.system_prompt = ""
         self.budget = 56000
+        self.budget_resolver = None
         self.workspaces = {str(workspace.root): workspace}
         self.run_thread = None
         self.interrupt_event = threading.Event()
@@ -233,8 +235,39 @@ class WebAgentServer:
             if patch.get("permission") in ("auto", "ask", "plan"):
                 self.settings["permission"] = patch["permission"]
             self._save_settings()
+            # 模型相关设置写回 .env，使面板改动与 .env 配置保持一致（.env 已被 gitignore）
+            self._sync_env(patch)
             self._apply_permission_plan()
         return self.get_settings()
+
+    def _sync_env(self, patch: dict) -> None:
+        """把面板改动的模型/BaseURL/Key 同步写回 .env（保留其余行/注释）。"""
+        mapping = {"model": "AGENT_MODEL", "model_url": "AGENT_BASE_URL", "model_key": "AGENT_API_KEY"}
+        wants = {mapping[k]: patch[k] for k in mapping if k in patch and patch[k] != ""}
+        if not wants:
+            return
+        env_path = find_env_file(self.workspace.root)
+        lines = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+        touched = set()
+        out = []
+        for line in lines:
+            stripped = line.strip()
+            hit = False
+            for env_key, val in wants.items():
+                if stripped.startswith(env_key + "="):
+                    out.append(f"{env_key}={val}")
+                    touched.add(env_key)
+                    hit = True
+                    break
+            if not hit:
+                out.append(line)
+        for env_key, val in wants.items():
+            if env_key not in touched:
+                out.append(f"{env_key}={val}")
+        try:
+            env_path.write_text("\n".join(out).rstrip("\n") + "\n", encoding="utf-8")
+        except OSError:
+            pass
 
     def _apply_permission_plan(self) -> None:
         """把当前 permission（auto/ask/plan）应用到运行中的 loop（运行时切换授权/计划模式）。
@@ -267,6 +300,7 @@ class WebAgentServer:
         self.loop = loop
         self.system_prompt = loop.ctx.messages[0]["content"]
         self.budget = loop.ctx.budget
+        self.budget_resolver = getattr(loop.ctx, "budget_resolver", None)
         self._activate(self.workspace.get_active())
 
     # ---------- 工作区 ----------
@@ -315,7 +349,7 @@ class WebAgentServer:
             msgs = load_messages_for_session(path) if path.exists() else None
             rec.messages = msgs or self._fresh_messages()
         rec.writer = self._open_writer(rec)
-        ctx = Context(self.system_prompt, self.budget)
+        ctx = Context(self.system_prompt, self.budget, budget_resolver=self.budget_resolver)
         ctx.messages = list(rec.messages)
         self.loop.ctx = ctx
         # 关键：工具根目录同步到当前工作区（否则 agent 仍操作旧工作区）
@@ -418,7 +452,7 @@ class WebAgentServer:
             result = self.loop.run(task)
         except Exception as e:  # noqa: BLE001
             result = {"status": "error", "message": f"{type(e).__name__}: {e}"}
-        self.hub.broadcast({"type": "RunResult", **result})
+        self.hub.broadcast({"type": "RunResult", **result, "usage": dict(self.loop.ctx.real_usage)})
         self._persist_active(result)
 
     def _persist_active(self, result: dict):
@@ -427,7 +461,8 @@ class WebAgentServer:
             return
         rec.writer.log({"type": "RunResult", "status": result.get("status"),
                         "message": result.get("message") or result.get("summary"),
-                        "steps": result.get("steps")})
+                        "steps": result.get("steps"),
+                        "usage": dict(self.loop.ctx.real_usage)})
         rec.writer.log({"type": "MessagesDump", "messages": self.loop.ctx.messages})
         rec.messages = list(self.loop.ctx.messages)
         rec.mtime = time.time()
@@ -759,6 +794,7 @@ def _build_loop(workspace: Path, args, on_event, hub, web):
     from .tools import ToolContext, register_all
 
     register_all()
+    budget_resolver = None
     if args.mock:
         from .mock import MockLLM
         llm = MockLLM()
@@ -766,28 +802,41 @@ def _build_loop(workspace: Path, args, on_event, hub, web):
     else:
         from .config import Config
         from .llm import LLMClient
+        from .models import context_window_for, budget_for_window
         cfg = Config(workspace, model=args.model, base_url=args.base_url, api_key=args.api_key,
                      max_steps=args.max_steps, max_context_tokens=args.budget)
-        # 模型优先级：CLI 参数 > Web UI 设置 > .env/default
-        model_override = None if args.model else web.settings.get("model")
-        base_url = args.base_url or web.settings.get("model_url") or cfg.base_url
-        api_key = args.api_key or web.settings.get("model_key") or cfg.api_key
-        if not api_key:
+        # 固定兜底：CLI 参数 > .env/default（resolver 在 CLI 缺省时再实时读 Web 面板）
+        fallback_model = args.model or cfg.model
+        fallback_base_url = args.base_url or cfg.base_url
+        fallback_api_key = args.api_key or cfg.api_key
+        # 热切换 resolver：每次请求实时读 Web 设置面板，改完即对新请求生效，无需重启
+        model_resolver = lambda: args.model or web.settings.get("model") or fallback_model
+        base_url_resolver = lambda: args.base_url or web.settings.get("model_url") or fallback_base_url
+        api_key_resolver = lambda: args.api_key or web.settings.get("model_key") or fallback_api_key
+        if not api_key_resolver():
             raise SystemExit(
                 "未找到 API key：请设置环境变量 AGENT_API_KEY / DEEPSEEK_API_KEY，"
                 "或在工作区 .env 中提供，或在 Web 设置面板填写 API Key"
                 "（.env 已被 .gitignore 排除，不会入库）。")
-        llm = LLMClient(base_url=base_url, api_key=api_key,
-                        model=model_override or cfg.model,
-                        temperature=cfg.temperature, max_tokens=cfg.max_tokens, timeout=cfg.timeout)
+        llm = LLMClient(base_url=fallback_base_url, api_key=fallback_api_key,
+                        model=fallback_model,
+                        temperature=cfg.temperature, max_tokens=cfg.max_tokens, timeout=cfg.timeout,
+                        model_resolver=model_resolver, base_url_resolver=base_url_resolver,
+                        api_key_resolver=api_key_resolver)
         budget = cfg.max_context_tokens
+        # 预算热切换：按当前模型真实窗口推导预算（扣输出上限+余量），未知模型回退固定值
+        def budget_resolver():
+            win = context_window_for(model_resolver())
+            if not win:
+                return cfg.max_context_tokens
+            return budget_for_window(win, cfg.max_tokens)
     # 授权/计划：Web UI 运行时设置 > CLI 参数（--permission ask / --plan）> 默认 auto
     permission = web.settings.get("permission")
     if not permission:
         permission = "plan" if args.plan else ("ask" if args.permission == "ask" else "auto")
     plan = permission == "plan"
     confirm = web.confirm if permission == "ask" else None  # plan 只读+做计划，不逐次确认
-    ctx = Context(make_system_prompt(workspace), budget)
+    ctx = Context(make_system_prompt(workspace), budget, budget_resolver=budget_resolver)
     return AgentLoop(llm, ctx, ToolContext(workspace), max_steps=args.max_steps or 30,
                      on_event=on_event, confirm=confirm, plan_mode=plan,
                      interrupt_event=web.interrupt_event)

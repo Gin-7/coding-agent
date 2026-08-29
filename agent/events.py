@@ -78,6 +78,13 @@ class CompactedEvent:
 
 
 @dataclass
+class ContextUsageEvent:
+    """上下文窗口使用情况（UI 环形指示器用）：当前估算 token 数与当前预算（窗口）。"""
+    tokens: int
+    budget: int
+
+
+@dataclass
 class BackgroundStarted:
     """后台任务启动（长命令不阻塞主循环）。"""
     task_id: str

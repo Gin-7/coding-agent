@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Coding Agent</title>
-<link rel="stylesheet" href="/style.css?v=41">
+<link rel="stylesheet" href="/style.css?v=45">
 </head>
 <body>
 <div id="middle">
@@ -61,8 +61,14 @@
               </div>
             </div>
           </div>
+          <div id="ctx-ring" class="ctx-ring" title="当前上下文窗口使用率" aria-label="上下文窗口使用率">
+            <svg viewBox="0 0 24 24" width="20" height="20">
+              <circle class="ring-bg" cx="12" cy="12" r="10"></circle>
+              <circle class="ring-fg" cx="12" cy="12" r="10"></circle>
+            </svg>
+          </div>
           <button id="btn-run" class="send" title="发送 / 停止">
-            <span class="ic-send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M12 5l-6 6M12 5l6 6"/></svg></span>
+            <span class="ic-send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M12 5l-6 6M12 5l6 6"/></svg></span>
             <span class="ic-stop"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg></span>
           </button>
         </div>
@@ -218,6 +224,6 @@
 <!-- 审批提示已改为非阻塞浮层（#confirm-toast，位于 main#chat 内） -->
 
 
-<script src="/app.js?v=41"></script>
+<script src="/app.js?v=45"></script>
 </body>
 </html>

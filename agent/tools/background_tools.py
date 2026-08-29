@@ -15,7 +15,7 @@ def tool_start_background(tool_ctx, command, timeout=None, workdir=None):
     command = (command or "").strip()
     if not command:
         return "命令为空"
-    why = _check_blacklist(command)
+    why = _check_blacklist(command, CATASTROPHIC)
     if why:
         raise ToolRejected(f"已拦截危险命令（{why}）：{command}")
     mgr = _mgr(tool_ctx, "start_background")

@@ -10,13 +10,14 @@ from .background import BackgroundManager
 from .compaction import compact_history
 from .context import Context
 from .events import (BackgroundOutput, BackgroundStarted, BackgroundStatus, CommandOutput,
-                     CompactedEvent, ErrorEvent, FinishEvent, StepEvent, SubagentEvent,
-                     SubagentResult, SubagentStarted, SubagentStatus, TextDelta,
+                     CompactedEvent, ContextUsageEvent, ErrorEvent, FinishEvent, StepEvent,
+                     SubagentEvent, SubagentResult, SubagentStarted, SubagentStatus, TextDelta,
                      ToolCallEvent, ToolResultEvent, TrimmedEvent)
 from .events import event_to_dict
 from .llm import LLMError
 from .parser import ParseError, parse_tool_calls, parse_text_protocol
 from .tools import TOOLS, ToolContext, dispatch, tool_schemas
+from .tools.shell_tools import is_destructive
 
 # 需要用户确认（审批模式）的工具：命令执行类一律确认
 GUARDED_TOOLS = ("run_command", "git_commit", "start_background")
@@ -116,7 +117,8 @@ class AgentLoop:
         from .prompts import make_system_prompt
         sub_tool_ctx = ToolContext(self.tool_ctx.workspace)
         sub_tool_ctx.background = self.tool_ctx.background  # 共享后台管理
-        sub_ctx = Context(make_system_prompt(self.tool_ctx.workspace), self.ctx.budget)
+        sub_ctx = Context(make_system_prompt(self.tool_ctx.workspace), self.ctx.budget,
+                          budget_resolver=getattr(self.ctx, "budget_resolver", None))
         sub_loop = AgentLoop(self.llm, sub_ctx, sub_tool_ctx, max_steps=steps,
                              on_event=self._make_sub_on_event(sub_id, batch_id), confirm=None,
                              plan_mode=False, interrupt_event=self.interrupt_event,
@@ -263,6 +265,11 @@ class AgentLoop:
         if self.on_event:
             self.on_event(ev)
 
+    def _emit_context_usage(self) -> None:
+        """广播当前上下文窗口使用率（环形指示器数据）；子 agent 也调用，其事件被包裹为
+        SubagentEvent，不会污染主 agent 的环形指示器。"""
+        self._emit(ContextUsageEvent(tokens=self.ctx.estimated_tokens(), budget=self.ctx._cur_budget()))
+
     def _manage_context(self) -> None:
         """预算管理三层策略：compaction（保留语义）→ 裁剪（免费兜底）→ 硬截断（最后手段）。"""
         if not self.ctx.needs_trim():
@@ -299,6 +306,7 @@ class AgentLoop:
             self.ctx.add({"role": "user", "content": "【工具执行结果】\n" + result["output"]})
         else:
             self.ctx.add({"role": "tool", "tool_call_id": call.call_id, "content": result["output"]})
+        self._emit_context_usage()
 
     def _plan_pending(self) -> bool:
         """计划模式：全程只读 + 做计划（无批准→执行阶段）。"""
@@ -334,6 +342,7 @@ class AgentLoop:
             self._emit(StepEvent(step, self.max_steps))
             self._maybe_hint_finish(step)
             self._manage_context()
+            self._emit_context_usage()
 
             # 1. 调 LLM（流式）；按 allowed_tools / 规划阶段过滤暴露的工具
             content_parts, tool_calls_raw = [], []
@@ -417,6 +426,15 @@ class AgentLoop:
                     # 计划模式拒绝一切写/执行类操作（只做计划，不执行）
                     result = {"ok": False,
                               "output": "计划模式仅允许只读工具（read_file/list_dir/search/glob/git_status/git_diff），只做计划、不执行修改"}
+                    self._emit(ToolResultEvent(a.call_id, a.name, False, result["output"]))
+                    self._append_tool_result(a, result, text_protocol)
+                    continue
+                # 破坏性删除命令：auto 模式无人可批准 → 拒绝并提示切批准模式；
+                # ask 模式（self.confirm 已设置）落到下方 confirm 网关由用户决定；plan 模式已在上方拦截
+                if a.name == "run_command" and is_destructive(a.arguments.get("command", "")) \
+                        and self.confirm is None:
+                    result = {"ok": False,
+                              "output": "安全策略：破坏性删除命令需要人工批准，请在设置面板将权限切换为“批准模式(ask)”后再执行"}
                     self._emit(ToolResultEvent(a.call_id, a.name, False, result["output"]))
                     self._append_tool_result(a, result, text_protocol)
                     continue

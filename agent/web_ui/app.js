@@ -39,6 +39,24 @@ function scrollToBottom(scroll) {
   if (near) scroll.scrollTop = scroll.scrollHeight;
 }
 function showEmpty(show) { document.getElementById("empty").style.display = show ? "" : "none"; }
+
+/* 上下文窗口环形指示器：根据当前 token 数与预算，更新进度环（无中心文字） */
+const ctxRing = document.getElementById("ctx-ring");
+const ctxRingFg = ctxRing ? ctxRing.querySelector(".ring-fg") : null;
+const RING_CIRC = 2 * Math.PI * 10;  // r=10
+function updateContextRing(tokens, budget) {
+  if (!ctxRingFg || !budget || budget <= 0) return;
+  const pct = Math.max(0, Math.min(1, tokens / budget));
+  // 环进度（dashoffset 越小越满）
+  ctxRingFg.style.strokeDashoffset = String(RING_CIRC * (1 - pct));
+  // 颜色分级：<60% 正常 / 60%~85% 警戒 / >85% 危险
+  let color;
+  if (pct < 0.6) color = "var(--accent)";
+  else if (pct < 0.85) color = "#eab308";
+  else color = "var(--red)";
+  ctxRingFg.style.stroke = color;
+  ctxRing.title = "上下文窗口使用率 " + Math.round(pct * 100) + "%（" + tokens.toLocaleString() + " / " + budget.toLocaleString() + " tokens）";
+}
 function addBubble(cls, text, parent, scroll) {
   const b = document.createElement("div");
   b.className = "bubble " + cls;
@@ -314,6 +332,9 @@ function render(ev, opts) {
       lastAssistant = null; lastCommandPre = null;   // 重置分段，使每步文本独立成块
       addSystem("step " + ev.step + "/" + ev.max_steps, "step", turn);
       break;
+    case "ContextUsageEvent":
+      updateContextRing(ev.tokens, ev.budget);
+      break;
     case "ToolCallEvent": {
       if (ev.name === "finish") break;   // finish 以正文气泡渲染，不画工具卡片
       const el = addToolInline(ev.name, ev.arguments, turn || chatCol);
@@ -439,6 +460,7 @@ function render(ev, opts) {
 /* ---------- 回放：重放全量事件日志，复用 render ---------- */
 function replayEvents(events) {
   chatCol.innerHTML = "";
+  updateContextRing(0, 1);  // 先归零，回放中由 ContextUsageEvent 刷新到真实使用率
   turn = null; lastAssistant = null; lastCommandPre = null; assistantRaw = "";
   lastCmdToolEl = null; toolCards.clear();
   toolCards.clear();
