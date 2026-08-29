@@ -5,6 +5,7 @@ const chatCol = document.getElementById("chat-col");
 const scrollEl = document.getElementById("chat-scroll");
 const input = document.getElementById("input");
 const btnRun = document.getElementById("btn-run");
+const permissionSelect = document.getElementById("permission-select");
 
 let running = false;
 let lastAssistant = null;
@@ -606,6 +607,7 @@ function submit() {
   const task = input.value.trim();
   if (!task || running) return;
   input.value = "";
+  autoGrow();
   setRunning(true);
   fetch("/api/run", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ task }) })
     .then(r => r.json())
@@ -617,6 +619,15 @@ btnRun.addEventListener("click", () => {
   else fetch("/api/interrupt", { method: "POST" });
 });
 input.addEventListener("keydown", e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); submit(); } });
+
+/* ---------- 输入框动态高度（上限 220px）+ 权限/计划控件 ---------- */
+function autoGrow() {
+  input.style.height = "auto";
+  input.style.height = Math.min(input.scrollHeight, 220) + "px";
+}
+input.addEventListener("input", autoGrow);
+autoGrow();
+permissionSelect.addEventListener("change", () => saveSettings({ permission: permissionSelect.value }));
 
 /* ---------- 文件夹选择器 ---------- */
 async function renderBrowse() {
@@ -747,6 +758,7 @@ async function loadSettings() {
     if (typeof s.model === "string" && s.model.trim()) document.getElementById("model-input").value = s.model;
     if (typeof s.model_url === "string") document.getElementById("model-url-input").value = s.model_url;
     if (typeof s.model_key === "string") document.getElementById("model-key-input").value = s.model_key;
+    if (s.permission === "auto" || s.permission === "ask" || s.permission === "plan") permissionSelect.value = s.permission;
   } catch (e) { }
 }
 

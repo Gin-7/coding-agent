@@ -36,9 +36,9 @@ def _parse_args(argv):
     p.add_argument("--resume-file", default=None, metavar="PATH",
                    help="从指定会话 JSONL 文件恢复历史继续")
     p.add_argument("--permission", choices=("auto", "ask"), default="auto",
-                   help="执行权限：auto 自动执行（危险命令黑名单拦截）；ask 每个命令/提交需确认（默认 auto）")
+                   help="执行权限：auto 自动执行（危险命令黑名单拦截）；ask 命令/提交/后台启动/写授权子agent 需确认（默认 auto）")
     p.add_argument("--plan", action="store_true",
-                   help="规划模式：先让 agent 制定计划并征求确认，批准后执行")
+                   help="计划模式：只读探索并制定计划，不执行修改（等价于 --permission plan）")
     p.add_argument("--web", action="store_true", help="启动 Web UI（本地网页界面，SSE 事件流）")
     p.add_argument("--port", type=int, default=8080, help="Web UI 端口（默认 8080）")
     return p.parse_args(argv)

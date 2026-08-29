@@ -93,6 +93,27 @@ def test_web_server_endpoints(tmp):
         assert "UserMessage" in types and "ToolCallEvent" in types and "RunResult" in types
         assert events[-1]["status"] == "finished"
 
+        # 运行时权限/计划设置应作用于 loop（_apply_permission_plan）
+        req = urllib.request.Request(base + "/api/settings", data=_json.dumps(
+            {"permission": "ask", "plan": False}).encode("utf-8"), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            s = _json.loads(r.read())
+        assert s.get("permission") == "ask" and web.loop.confirm is not None
+        req = urllib.request.Request(base + "/api/settings", data=_json.dumps(
+            {"permission": "auto", "plan": False}).encode("utf-8"), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            _json.loads(r.read())
+        assert web.loop.confirm is None
+        req = urllib.request.Request(base + "/api/settings", data=_json.dumps(
+            {"permission": "plan"}).encode("utf-8"), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            _json.loads(r.read())
+        assert web.loop.plan_mode is True and web.loop.confirm is None
+        req = urllib.request.Request(base + "/api/settings", data=_json.dumps(
+            {"permission": "auto"}).encode("utf-8"), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            _json.loads(r.read())
+
         # 文件夹选择器：根浏览（盘符）与具体目录
         with urllib.request.urlopen(base + "/api/fs/browse", timeout=10) as r:
             b = _json.loads(r.read())

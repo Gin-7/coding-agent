@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Coding Agent</title>
-<link rel="stylesheet" href="/style.css?v=25">
+<link rel="stylesheet" href="/style.css?v=27">
 </head>
 <body>
 <div id="middle">
@@ -44,17 +44,25 @@
       </div>
       <div class="chat-col" id="chat-col"></div>
     </div>
-    <footer id="input-bar">
-      <div class="input-wrap">
-        <div class="input-box">
-          <textarea id="input" rows="1" placeholder="输入任务，Enter 发送，Shift+Enter 换行"></textarea>
-          <button id="btn-run" title="发送 / 停止">
+    <div id="composer">
+      <div class="composer-box">
+        <textarea id="input" rows="1" placeholder="输入任务，Enter 发送，Shift+Enter 换行"></textarea>
+        <div class="composer-bar">
+          <div class="composer-left">
+            <span class="cb-label">权限</span>
+            <select id="permission-select" class="cb-select">
+              <option value="auto">自动编辑</option>
+              <option value="ask">变更前确认</option>
+              <option value="plan">计划</option>
+            </select>
+          </div>
+          <button id="btn-run" class="send" title="发送 / 停止">
             <span class="ic-send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M12 5l-6 6M12 5l6 6"/></svg></span>
             <span class="ic-stop"><svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor"/></svg></span>
           </button>
         </div>
       </div>
-    </footer>
+    </div>
   </main>
 
   <div id="rp-resizer" title="拖拽调整文件栏宽度"></div>
@@ -149,6 +157,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=18"></script>
+<script src="/app.js?v=20"></script>
 </body>
 </html>

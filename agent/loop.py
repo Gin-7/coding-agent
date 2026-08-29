@@ -16,8 +16,11 @@ from .llm import LLMError
 from .parser import ParseError, parse_tool_calls, parse_text_protocol
 from .tools import TOOLS, ToolContext, dispatch, tool_schemas
 
-# 需要用户确认（审批模式）的工具
-GUARDED_TOOLS = ("run_command", "git_commit")
+# 需要用户确认（审批模式）的工具：命令执行类一律确认
+GUARDED_TOOLS = ("run_command", "git_commit", "start_background")
+
+# 子 agent 派生类工具：仅当授予写权限（allow_write=true）时才需确认
+SUBAGENT_SPAWN_TOOLS = ("spawn_subagent", "spawn_subagents", "start_subagents")
 
 # 规划阶段 / 子 agent 默认只开放只读工具
 READONLY_TOOLS = ("read_file", "list_dir", "search", "glob", "git_status", "git_diff")
@@ -50,11 +53,10 @@ class AgentLoop:
         self.max_steps = max_steps
         self.on_event = on_event
         self.confirm = confirm  # 可选：Callable[[tool_name, args_desc], bool]，审批模式回调
-        self.plan_mode = plan_mode  # 先计划后行动：第一轮后展示计划征求批准
+        self.plan_mode = plan_mode  # 计划模式：全程只读 + 做计划（无批准→执行）
         self.interrupt_event = interrupt_event  # 可选：threading.Event，Web UI 中断用
         self.allowed_tools = allowed_tools  # 可选：set/序列，仅允许这些工具（子 agent 只读）
         self.subagent_depth = subagent_depth  # 嵌套深度（防止子 agent 无限递归）
-        self._plan_approved = False
         self.tool_ctx.on_output = lambda text: self._emit(CommandOutput(text))
         # 后台任务管理器（挂到工具上下文，供后台工具访问）
         self.background = BackgroundManager()
@@ -261,13 +263,30 @@ class AgentLoop:
             self.ctx.add({"role": "tool", "tool_call_id": call.call_id, "content": result["output"]})
 
     def _plan_pending(self) -> bool:
-        return self.plan_mode and not self._plan_approved
+        """计划模式：全程只读 + 做计划（无批准→执行阶段）。"""
+        return self.plan_mode
+
+    def _needs_confirm(self, name: str, args: dict) -> bool:
+        """审批模式下是否需要用户确认该工具调用。
+
+        规则：命令执行类（GUARDED_TOOLS）一律确认；子 agent 派生类仅当授予写权限
+        （allow_write=true，可能出现在顶层或 tasks 项里）时才确认——只读派发不必打扰。
+        """
+        if name in GUARDED_TOOLS:
+            return True
+        if name in SUBAGENT_SPAWN_TOOLS:
+            if args.get("allow_write"):
+                return True
+            for t in args.get("tasks") or []:
+                if t.get("allow_write"):
+                    return True
+        return False
 
     def run(self, task: str) -> dict:
         self.ctx.add({"role": "user", "content": task})
         if self.plan_mode:
             self.ctx.add({"role": "user",
-                          "content": "【规划阶段】请先了解现状并制定执行计划：输出计划文本（本阶段仅开放只读工具用于探索），不要执行写/命令类操作，也不要调用 finish。"})
+                          "content": "【计划模式】请用只读工具探索现状，制定一份可执行的计划；本模式只做计划、不执行任何修改，完成后调用 finish 并把计划作为总结。"})
         text_only_streak = 0
 
         for step in range(1, self.max_steps + 1):
@@ -349,7 +368,7 @@ class AgentLoop:
                     self._emit(FinishEvent(summary))
                     return {"status": "finished", "summary": summary,
                             "steps": step, "usage": dict(self.ctx.real_usage)}
-                if self.confirm and a.name in GUARDED_TOOLS:
+                if self.confirm and self._needs_confirm(a.name, a.arguments):
                     desc = json.dumps(a.arguments, ensure_ascii=False)
                     if not self.confirm(a.name, desc):
                         result = {"ok": False, "output": f"用户拒绝了该操作（{a.name}）"}
@@ -357,9 +376,9 @@ class AgentLoop:
                         self._append_tool_result(a, result, text_protocol)
                         continue
                 if self._plan_pending() and a.name not in PLAN_TOOLS:
-                    # 规划阶段拒绝一切写/执行类操作（计划批准前只允许只读探索）
+                    # 计划模式拒绝一切写/执行类操作（只做计划，不执行）
                     result = {"ok": False,
-                              "output": "规划阶段仅允许只读工具（read_file/list_dir/search/glob/git_status/git_diff），请等待计划批准后再执行"}
+                              "output": "计划模式仅允许只读工具（read_file/list_dir/search/glob/git_status/git_diff），只做计划、不执行修改"}
                     self._emit(ToolResultEvent(a.call_id, a.name, False, result["output"]))
                     self._append_tool_result(a, result, text_protocol)
                     continue
@@ -375,18 +394,6 @@ class AgentLoop:
                 r = self._interrupted(step)
                 if r:
                     return r
-
-            # 规划模式：第一轮后暂停，展示计划并征求用户批准
-            if self.plan_mode and step == 1 and not self._plan_approved:
-                plan_text = content.strip() or "（模型未输出计划文本）"
-                ok = self.confirm("plan", plan_text) if self.confirm else True
-                if not ok:
-                    self.ctx.add({"role": "user", "content": "用户拒绝了计划，任务取消。"})
-                    self._emit(ErrorEvent("计划未获批准，任务取消"))
-                    return {"status": "cancelled", "message": "计划未获批准",
-                            "steps": step, "usage": dict(self.ctx.real_usage)}
-                self._plan_approved = True
-                self.ctx.add({"role": "user", "content": "计划已批准，请按计划执行；完成后调用 finish。"})
 
         self._emit(ErrorEvent(f"达到最大步数 {self.max_steps}，任务中止"))
         return {"status": "timeout", "message": f"达到最大步数 {self.max_steps}", "steps": self.max_steps}

@@ -203,7 +203,8 @@ class WebAgentServer:
             data = json.loads(self.settings_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             return {}
-        return {k: data[k] for k in ("theme", "sidebar_collapsed", "right_collapsed", "model", "model_url", "model_key") if k in data}
+        return {k: data[k] for k in ("theme", "sidebar_collapsed", "right_collapsed",
+                                     "model", "model_url", "model_key", "permission") if k in data}
 
     def _save_settings(self) -> None:
         try:
@@ -229,8 +230,22 @@ class WebAgentServer:
                 self.settings["model_url"] = patch["model_url"].strip()
             if isinstance(patch.get("model_key"), str):
                 self.settings["model_key"] = patch["model_key"].strip()
+            if patch.get("permission") in ("auto", "ask", "plan"):
+                self.settings["permission"] = patch["permission"]
             self._save_settings()
+            self._apply_permission_plan()
         return self.get_settings()
+
+    def _apply_permission_plan(self) -> None:
+        """把当前 permission（auto/ask/plan）应用到运行中的 loop（运行时切换授权/计划模式）。
+
+        plan = 只读 + 做计划（无批准→执行），因此不触发 confirm（无需逐次确认）。
+        """
+        if self.loop is None:
+            return
+        permission = self.settings.get("permission", "auto")
+        self.loop.confirm = self.confirm if (permission == "ask") else None
+        self.loop.plan_mode = permission == "plan"
 
     def list_workspaces(self) -> list:
         result = []
@@ -748,10 +763,15 @@ def _build_loop(workspace: Path, args, on_event, hub, web):
                         model=model_override or cfg.model,
                         temperature=cfg.temperature, max_tokens=cfg.max_tokens, timeout=cfg.timeout)
         budget = cfg.max_context_tokens
-    confirm = web.confirm if (args.permission == "ask" or args.plan) else None
+    # 授权/计划：Web UI 运行时设置 > CLI 参数（--permission ask / --plan）> 默认 auto
+    permission = web.settings.get("permission")
+    if not permission:
+        permission = "plan" if args.plan else ("ask" if args.permission == "ask" else "auto")
+    plan = permission == "plan"
+    confirm = web.confirm if permission == "ask" else None  # plan 只读+做计划，不逐次确认
     ctx = Context(make_system_prompt(workspace), budget)
     return AgentLoop(llm, ctx, ToolContext(workspace), max_steps=args.max_steps or 30,
-                     on_event=on_event, confirm=confirm, plan_mode=args.plan,
+                     on_event=on_event, confirm=confirm, plan_mode=plan,
                      interrupt_event=web.interrupt_event)
 
 

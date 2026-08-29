@@ -73,34 +73,27 @@ def test_permission_deny(tmp):
     assert any("用户拒绝" in (m.get("content") or "") for m in loop.ctx.messages)
 
 
-def test_plan_mode_approved(tmp):
+def test_plan_mode_readonly(tmp):
+    """计划模式 = 只读 + 做计划：写/执行被拒（无批准→执行阶段），最终 finish。"""
     from agent.context import Context
     from agent.loop import AgentLoop
     from agent.mock import MockLLM
     from agent.prompts import make_system_prompt
     from agent.tools import ToolContext, register_all
     register_all()
-    ws = make_ws(tmp, "plan_ok")
+    ws = make_ws(tmp, "plan")
     loop = AgentLoop(MockLLM(), Context(make_system_prompt(str(ws)), 56000), ToolContext(ws),
-                     max_steps=10, on_event=None, confirm=lambda name, desc: True, plan_mode=True)
+                     max_steps=10, on_event=None, plan_mode=True)
     result = loop.run("演示任务")
     assert result["status"] == "finished"
     contents = " ".join(m.get("content") or "" for m in loop.ctx.messages)
-    assert "计划已批准" in contents
-
-
-def test_plan_mode_rejected(tmp):
-    from agent.context import Context
-    from agent.loop import AgentLoop
-    from agent.mock import MockLLM
-    from agent.prompts import make_system_prompt
-    from agent.tools import ToolContext, register_all
-    register_all()
-    ws = make_ws(tmp, "plan_no")
-    loop = AgentLoop(MockLLM(), Context(make_system_prompt(str(ws)), 56000), ToolContext(ws),
-                     max_steps=10, on_event=None, confirm=lambda name, desc: False, plan_mode=True)
-    result = loop.run("演示任务")
-    assert result["status"] == "cancelled"
+    # 写/执行类操作被执行层拒绝（计划模式只读）
+    assert "计划模式仅允许只读" in contents
+    # 计划模式提示应注入（"只做计划"）
+    assert "【计划模式】" in contents
+    # 只读 schema 过滤：计划模式下暴露的工具不含 run_command
+    names = [s["function"]["name"] for s in loop._schemas()]
+    assert "run_command" not in names and "read_file" in names
 
 
 def test_subagent_returns_result(tmp):
@@ -167,6 +160,30 @@ def test_subagents_parallel_depth_guard(tmp):
                      max_steps=10, on_event=None, subagent_depth=2)
     result = loop._run_subagents_parallel([{"prompt": "x"}])
     assert "嵌套深度" in result
+
+
+def test_needs_confirm(tmp):
+    """审批模式确认规则：命令执行类一律确认；子 agent 仅当授予写权限才确认。"""
+    from agent.context import Context
+    from agent.loop import AgentLoop
+    from agent.mock import MockLLM
+    from agent.prompts import make_system_prompt
+    from agent.tools import ToolContext, register_all
+    register_all()
+    ws = make_ws(tmp, "confirm")
+    loop = AgentLoop(MockLLM(), Context(make_system_prompt(str(ws)), 56000), ToolContext(ws),
+                     max_steps=10, on_event=None)
+    assert loop._needs_confirm("run_command", {"command": "x"}) is True
+    assert loop._needs_confirm("start_background", {"command": "x"}) is True
+    assert loop._needs_confirm("git_commit", {"message": "m"}) is True
+    assert loop._needs_confirm("read_file", {"path": "x"}) is False
+    # 只读子 agent 不确认
+    assert loop._needs_confirm("spawn_subagent", {"prompt": "p"}) is False
+    assert loop._needs_confirm("spawn_subagents", {"tasks": [{"prompt": "p"}]}) is False
+    # 写授权子 agent 确认（顶层 / tasks 项内）
+    assert loop._needs_confirm("spawn_subagent", {"prompt": "p", "allow_write": True}) is True
+    assert loop._needs_confirm("spawn_subagents", {"tasks": [{"prompt": "p", "allow_write": True}]}) is True
+    assert loop._needs_confirm("start_subagents", {"tasks": [{"prompt": "p", "allow_write": True}]}) is True
 
 
 def main() -> int:
