@@ -101,8 +101,38 @@ class BackgroundStatus:
 
 
 @dataclass
+class SubagentStarted:
+    """子 agent 启动（运行态：开始在后台/并行执行）。"""
+    subagent_id: str
+    batch_id: str
+    name: str
+    prompt: str
+
+
+@dataclass
+class SubagentEvent:
+    """子 agent 运行期间的逐事件上行（文本增量 / 工具调用 / 结果等）。
+
+    event 为被包装的内部事件 dict（含 type 字段），前端按明细类型渲染成
+    与主 agent 一致的对话视图。
+    """
+    subagent_id: str
+    batch_id: str
+    event: dict
+
+
+@dataclass
+class SubagentStatus:
+    """子 agent 状态变化（done / error / interrupted）。"""
+    subagent_id: str
+    batch_id: str
+    status: str
+    summary: str
+
+
+@dataclass
 class SubagentResult:
-    """子 agent 完成汇总。"""
+    """子 agent 完成汇总（兼容旧路径；新链路改走 Started/Event/Status）。"""
     task_id: str
     status: str
     summary: str

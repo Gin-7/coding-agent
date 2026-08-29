@@ -10,8 +10,10 @@ from .background import BackgroundManager
 from .compaction import compact_history
 from .context import Context
 from .events import (BackgroundOutput, BackgroundStarted, BackgroundStatus, CommandOutput,
-                     CompactedEvent, ErrorEvent, FinishEvent, StepEvent, SubagentResult,
-                     TextDelta, ToolCallEvent, ToolResultEvent, TrimmedEvent)
+                     CompactedEvent, ErrorEvent, FinishEvent, StepEvent, SubagentEvent,
+                     SubagentResult, SubagentStarted, SubagentStatus, TextDelta,
+                     ToolCallEvent, ToolResultEvent, TrimmedEvent)
+from .events import event_to_dict
 from .llm import LLMError
 from .parser import ParseError, parse_tool_calls, parse_text_protocol
 from .tools import TOOLS, ToolContext, dispatch, tool_schemas
@@ -70,6 +72,7 @@ class AgentLoop:
         self.tool_ctx.list_subagent_batches = self._list_subagent_batches
         self._sub_batches = {}   # 后台子 agent 批次：batch_id -> {threads, results, tasks}
         self._batch_counter = 0
+        self._sub_progress = {}  # 子 agent 运行态：subagent_id -> {batch_id,name,prompt,status,summary,events:[]}
 
     def _bg_emit(self, ev: dict):
         t = ev.get("type")
@@ -88,12 +91,15 @@ class AgentLoop:
             base = [s for s in base if s["function"]["name"] in PLAN_TOOLS]
         return base
 
-    def _run_subagent_inner(self, prompt: str, max_steps: int, tools, allow_write: bool = False):
+    def _run_subagent_inner(self, sub_id: str, batch_id: str, prompt: str,
+                             max_steps: int, tools, allow_write: bool = False):
         """运行单个子 agent（同步）。返回 (status, summary[:2000])。
 
         每个子 agent 用**自己的 ToolContext**（共享工作区/后台管理），使各回调各归各、并行安全。
         allow_write=False（默认）：硬只读 —— 忽略 tools 里的写/执行工具，最多只收窄只读集合；
         allow_write=True：才允许 tools 指定的（或全部）工具。
+        运行期间通过 on_event 包装器把逐事件上浮为 SubagentEvent，并在启动/结束时广播
+        SubagentStarted / SubagentStatus（供 Web UI 实时展示“运行中”与对话式详情）。
         """
         steps = max(1, min(int(max_steps or 8), MAX_SUBAGENT_STEPS))
         if allow_write:
@@ -102,13 +108,18 @@ class AgentLoop:
             allowed = set(READONLY_TOOLS)             # 硬只读
             if tools:
                 allowed = allowed & set(tools)        # tools 只能再收窄
+        # 注册运行态 + 广播启动
+        self._sub_progress[sub_id] = {"batch_id": batch_id, "name": prompt[:40],
+                                      "prompt": prompt, "status": "running",
+                                      "summary": "", "events": []}
+        self._emit(SubagentStarted(sub_id, batch_id, prompt[:40], prompt))
         from .prompts import make_system_prompt
         sub_tool_ctx = ToolContext(self.tool_ctx.workspace)
         sub_tool_ctx.background = self.tool_ctx.background  # 共享后台管理
         sub_ctx = Context(make_system_prompt(self.tool_ctx.workspace), self.ctx.budget)
         sub_loop = AgentLoop(self.llm, sub_ctx, sub_tool_ctx, max_steps=steps,
-                             on_event=None, confirm=None, plan_mode=False,
-                             interrupt_event=self.interrupt_event,
+                             on_event=self._make_sub_on_event(sub_id, batch_id), confirm=None,
+                             plan_mode=False, interrupt_event=self.interrupt_event,
                              allowed_tools=allowed, subagent_depth=self.subagent_depth + 1)
         try:
             result = sub_loop.run(prompt)
@@ -116,14 +127,28 @@ class AgentLoop:
             result = {"status": "error", "message": f"{type(e).__name__}: {e}"}
         status = result.get("status")
         summary = result.get("summary") or result.get("message") or self._last_subagent_output(sub_ctx)
-        return status, (summary or "")[:2000]
+        summary = (summary or "")[:2000]
+        self._sub_progress[sub_id]["status"] = status
+        self._sub_progress[sub_id]["summary"] = summary
+        self._emit(SubagentStatus(sub_id, batch_id, status, summary))
+        return status, summary
+
+    def _make_sub_on_event(self, sub_id: str, batch_id: str):
+        """包装子 agent 的逐事件：存入进度日志 + 上浮为 SubagentEvent。"""
+        def cb(ev):
+            d = ev if isinstance(ev, dict) else event_to_dict(ev)
+            entry = self._sub_progress.get(sub_id)
+            if entry is not None and entry["status"] == "running":
+                entry["events"].append(d)
+            self._emit(SubagentEvent(sub_id, batch_id, d))
+        return cb
 
     def _run_subagent(self, prompt: str, max_steps: int = 8, tools=None, allow_write: bool = False) -> str:
         """运行一个独立的子 agent（同步），返回有界结果字符串。"""
         if self.subagent_depth >= self.MAX_SUBAGENT_DEPTH:
             return "达子 agent 嵌套深度上限，不再派生"
-        status, summary = self._run_subagent_inner(prompt, max_steps, tools, allow_write)
-        self._emit(SubagentResult(_next_subagent_id(), status, summary))
+        sub_id = _next_subagent_id()
+        status, summary = self._run_subagent_inner(sub_id, sub_id, prompt, max_steps, tools, allow_write)
         return summary
 
     def _run_subagents_parallel(self, tasks) -> str:
@@ -134,12 +159,15 @@ class AgentLoop:
             return "任务列表为空"
         tasks = tasks[:MAX_PARALLEL_SUBAGENTS]
         results = [None] * len(tasks)
+        self._batch_counter += 1
+        batch_id = f"spawn-{self._batch_counter}"
 
         def worker(i, t):
             try:
+                sub_id = _next_subagent_id()
                 status, summary = self._run_subagent_inner(
-                    t.get("prompt", ""), t.get("max_steps", 8), t.get("tools"), bool(t.get("allow_write")))
-                self._emit(SubagentResult(_next_subagent_id(), status, summary))
+                    sub_id, batch_id, t.get("prompt", ""), t.get("max_steps", 8),
+                    t.get("tools"), bool(t.get("allow_write")))
                 results[i] = summary
             except Exception as e:  # noqa: BLE001
                 results[i] = f"子agent#{i + 1} 失败: {type(e).__name__}: {e}"
@@ -172,9 +200,10 @@ class AgentLoop:
 
         def worker(i, t):
             try:
+                sub_id = _next_subagent_id()
                 status, summary = self._run_subagent_inner(
-                    t.get("prompt", ""), t.get("max_steps", 8), t.get("tools"), bool(t.get("allow_write")))
-                self._emit(SubagentResult(_next_subagent_id(), status, summary))
+                    sub_id, batch_id, t.get("prompt", ""), t.get("max_steps", 8),
+                    t.get("tools"), bool(t.get("allow_write")))
                 results[i] = summary
             except Exception as e:  # noqa: BLE001
                 results[i] = f"子agent#{i + 1} 失败: {type(e).__name__}: {e}"
@@ -205,6 +234,15 @@ class AgentLoop:
             running = sum(1 for th in b["threads"] if th.is_alive())
             lines.append(f"{bid} [{running}/{len(b['tasks'])} 运行中]")
         return "\n".join(lines)
+
+    def list_subagents(self) -> list:
+        """Web UI 用的子 agent 运行态快照（含逐事件明细，供详情面板回放对话）。"""
+        return [
+            {"subagent_id": sid, "batch_id": e["batch_id"], "name": e["name"],
+             "prompt": e["prompt"], "status": e["status"], "summary": e["summary"],
+             "events": e["events"]}
+            for sid, e in self._sub_progress.items()
+        ]
 
     def _last_subagent_output(self, ctx: Context) -> str:
         """子 agent 未正常 finish 时，取最后一条 assistant 内容兜底。"""

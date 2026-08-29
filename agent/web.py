@@ -637,6 +637,16 @@ def build_handler(server: WebAgentServer):
                 self._json(server.get_settings())
             elif path == "/api/status":
                 self._json({"running": server.is_running(), "root": str(server.workspace.root)})
+            elif path == "/api/background/tasks":
+                loop = server.loop
+                tasks = (loop.background.list_tasks()
+                         if loop is not None and getattr(loop, "background", None) is not None
+                         else [])
+                self._json({"tasks": tasks})
+            elif path == "/api/subagents":
+                loop = server.loop
+                subs = loop.list_subagents() if loop is not None and hasattr(loop, "list_subagents") else []
+                self._json({"subagents": subs})
             else:
                 self.send_error(404)
 
@@ -675,6 +685,14 @@ def build_handler(server: WebAgentServer):
             elif path == "/api/confirm":
                 server.answer_confirm(bool(body.get("approved")))
                 self._json({"ok": True})
+            elif path == "/api/background/stop":
+                tid = body.get("task_id", "")
+                loop = server.loop
+                if loop is not None and getattr(loop, "background", None) is not None and tid:
+                    loop.background.stop(tid)
+                    self._json({"ok": True})
+                else:
+                    self._json({"ok": False, "message": "no active loop or task"}, 400)
             elif path == "/api/settings":
                 self._json(server.update_settings(body))
             elif path == "/api/workspace":

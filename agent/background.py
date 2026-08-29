@@ -109,7 +109,8 @@ class BackgroundManager:
     def list_tasks(self):
         with self._lock:
             return [{"task_id": tid, "status": t["status"], "exit_code": t["exit"],
-                     "command": t["command"], "pid": t["pid"]}
+                     "command": t["command"], "pid": t["pid"],
+                     "output": "".join(t["buffer"])}
                     for tid, t in self._tasks.items()]
 
     def close(self):

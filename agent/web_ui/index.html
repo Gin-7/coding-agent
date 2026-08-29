@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Coding Agent</title>
-<link rel="stylesheet" href="/style.css?v=31">
+<link rel="stylesheet" href="/style.css?v=41">
 </head>
 <body>
 <div id="middle">
@@ -68,6 +68,23 @@
         </div>
       </div>
     </div>
+    <!-- 审批提示（非阻塞浮层：不遮罩全屏，可继续浏览 / 滚动 / 操作，可收起为小条） -->
+    <div id="confirm-toast" class="confirm-toast hidden">
+      <div class="confirm-toast-head">
+        <span class="ct-ic" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="16" height="16"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 3L2 20h20L12 3z"/><path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 10v4M12 17h.01"/></svg>
+        </span>
+        <span id="confirm-title" class="ct-title"></span>
+        <button id="confirm-collapse" class="icon-mini" type="button" title="收起 / 展开">
+          <svg viewBox="0 0 24 24" width="14" height="14"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></svg>
+        </button>
+      </div>
+      <pre id="confirm-desc" class="ct-desc"></pre>
+      <div class="confirm-toast-actions">
+        <button id="btn-reject" class="danger" type="button">拒绝</button>
+        <button id="btn-approve" type="button">批准</button>
+      </div>
+    </div>
   </main>
 
   <div id="rp-resizer" title="拖拽调整文件栏宽度"></div>
@@ -77,20 +94,68 @@
       <div class="right-head">
         <span>文件</span>
         <div class="rh-actions">
-          <button id="btn-file-up" class="icon-mini" title="上级目录"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 19V5M5 12l7-7 7 7"/></svg></button>
           <button id="btn-right-collapse" class="icon-mini" title="收起"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M9 6l6 6-6 6"/></svg></button>
         </div>
       </div>
       <div class="panel-body"><div id="files"></div></div>
+      <!-- 任务区域：文件树下方两个可收起 / 展开区（后台任务 / 子agent） -->
+      <div class="rp-taskwrap">
+        <section class="task-region" id="bg-region">
+          <div class="tr-head" data-region="bg">
+            <span class="tr-caret"><svg viewBox="0 0 24 24" width="10" height="10"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M9 6l6 6-6 6"/></svg></span>
+            <span class="tr-title">后台任务</span>
+            <span class="tr-count" id="bg-count">0</span>
+          </div>
+          <div class="tr-body" id="bg-body" hidden><div id="bg-list" class="task-list"></div></div>
+        </section>
+        <section class="task-region" id="sub-region">
+          <div class="tr-head" data-region="sub">
+            <span class="tr-caret"><svg viewBox="0 0 24 24" width="10" height="10"><path fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" d="M9 6l6 6-6 6"/></svg></span>
+            <span class="tr-title">子 agent</span>
+            <span class="tr-count" id="sub-count">0</span>
+          </div>
+          <div class="tr-body" id="sub-body" hidden><div id="sub-list" class="task-list"></div></div>
+        </section>
+      </div>
     </div>
-    <div class="rp-col rp-view" id="file-view" hidden>
-      <div class="right-head">
-        <span id="file-view-name" class="fv-name">—</span>
-        <div class="rh-actions">
-          <button id="btn-file-view-close" class="icon-mini" title="关闭预览"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M18 6L6 18M6 6l12 12"/></svg></button>
+    <div class="rp-col rp-view" id="rp-view" hidden>
+      <!-- 文件预览 -->
+      <div class="detail detail-file" id="file-view" hidden>
+        <div class="right-head">
+          <span id="file-view-name" class="fv-name">—</span>
+          <div class="rh-actions">
+            <button id="btn-file-view-close" class="icon-mini" title="关闭预览"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M18 6L6 18M6 6l12 12"/></svg></button>
+          </div>
+        </div>
+        <pre id="file-view-content" class="file-view-content"></pre>
+      </div>
+      <!-- 后台任务详情 -->
+      <div class="detail detail-task" id="task-detail" hidden>
+        <div class="right-head">
+          <span class="fv-name">后台任务</span>
+          <div class="rh-actions">
+            <button class="icon-mini detail-close" data-detail="task" title="关闭"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M18 6L6 18M6 6l12 12"/></svg></button>
+          </div>
+        </div>
+        <div class="td-body">
+          <div class="td-meta">
+            <code id="td-cmd" class="td-cmd"></code>
+            <span id="td-status" class="bg-status running">运行中</span>
+            <button id="td-stop" class="bg-stop" type="button" title="停止">■</button>
+          </div>
+          <pre id="td-out" class="td-out"></pre>
         </div>
       </div>
-      <pre id="file-view-content" class="file-view-content"></pre>
+      <!-- 子 agent 详情（对话式，与主 agent 一致） -->
+      <div class="detail detail-sub" id="sub-detail" hidden>
+        <div class="right-head">
+          <span id="sd-name" class="fv-name">子 agent</span>
+          <div class="rh-actions">
+            <button class="icon-mini detail-close" data-detail="sub" title="关闭"><svg viewBox="0 0 24 24" width="15" height="15"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M18 6L6 18M6 6l12 12"/></svg></button>
+          </div>
+        </div>
+        <div class="sd-body"><div id="sd-col" class="chat-col sd-col"></div></div>
+      </div>
     </div>
   </aside>
 </div>
@@ -150,18 +215,9 @@
   </div>
 </div>
 
-<!-- 审批弹窗 -->
-<div id="confirm-modal" class="modal hidden">
-  <div class="modal-box">
-    <div class="modal-head"><h3 id="confirm-title"></h3></div>
-    <pre id="confirm-desc"></pre>
-    <div class="modal-actions">
-      <button id="btn-approve">批准</button>
-      <button id="btn-reject" class="danger">拒绝</button>
-    </div>
-  </div>
-</div>
+<!-- 审批提示已改为非阻塞浮层（#confirm-toast，位于 main#chat 内） -->
 
-<script src="/app.js?v=30"></script>
+
+<script src="/app.js?v=41"></script>
 </body>
 </html>
