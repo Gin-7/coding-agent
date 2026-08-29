@@ -1,21 +1,61 @@
-# Coding Agent（编程智能体）
+# Coding Agent（编程智能体 · Web 版）
 
-个人自研的编程智能体：通过与大语言模型交互，自主读写文件、执行命令，完成编程任务。
+个人自研的编程智能体：通过与大语言模型交互，自主读写文件、执行命令，完成编程任务。**核心逻辑（对话历史与上下文管理、工具定义与本地执行、模型输出解析、循环终止、错误处理）全部自研，仅依赖 `requests`。**
 
-核心逻辑（对话历史与上下文管理、工具定义与本地执行、模型输出解析、循环终止、错误处理）全部自研，仅依赖 `requests`。
+界面以 **Web UI 为主**：浏览器渲染事件流（SSE 实时推送），文件树、对话、工具调用、后台任务与子 agent 全部可视可控。同时也保留命令行 REPL 作为轻量入口。
 
 ## 快速开始
 
 ```bash
 pip install -r requirements.txt
 
-# 方式一：模拟模式（无需 API key，演示完整流程）
-python -m agent --mock "演示任务"
+# 推荐：启动 Web UI（默认 http://127.0.0.1:8080）
+python -m agent --web
 
-# 方式二：真实模式（先配置 .env 或环境变量 AGENT_API_KEY）
+# Web UI 模拟模式（无需 API key，演示完整流程）
+python -m agent --web --mock
+python -m agent --web --mock --port 8090
+
+# 命令行模式（可选，无界面，适合管道 / 远程）
+python -m agent --mock "演示任务"
 python -m agent "写一个 hello.py 并运行"
-python -m agent                    # 交互式 REPL，多轮对话
+python -m agent                  # 交互式 REPL，多轮对话
 ```
+
+## Web UI（主要功能）
+
+后端为标准库 `http.server` + SSE，前端为纯 HTML/CSS/JS（可切换深色 / 浅色），**零额外前端依赖**。浏览器打开后即：
+
+- **左侧边栏 —— 工作区与会话树**
+  - 多工作区：随时用文件夹选择器切换本地目录作为工作区
+  - 多会话：每个工作区可建多个会话，会话名由首轮对话自动决定；点击会话即可在该会话内继续
+  - 底部"设置"入口
+- **中间对话区**
+  - 模型回复流式显示；工具调用以卡片呈现，点击展开查看参数与结果；命令输出实时滚动
+  - 上下文裁剪 / 压缩透明可见；切换会话直接定位到最新消息
+  - 审批请求以**非阻塞浮层**呈现（不遮罩全屏，可继续浏览 / 滚动 / 收起为小条）
+  - 输入栏"发送"按钮发送后切换为"中断"
+- **右侧边栏 —— 文件树 + 任务区**
+  - 文件树：浏览 / 预览工作区文件，目录可逐级进入（含 `..` 上移）
+  - 文件树下方两个可收起 / 展开区：**后台任务** 与 **子 agent**
+  - 点击列表中的任务 / 子 agent，在右侧预览列查看详情：
+    - 后台任务：命令、状态徽章、实时输出、停止按钮
+    - 子 agent：对话式详情（prompt + 工具调用 + 输出，与主 agent 一致）
+  - 当前选中的文件 / 任务项会高亮
+- **权限模式**（输入区下拉）：`自动编辑` / `变更前确认` / `计划模式`（先只读探索、批准后执行）
+- **设置弹窗**：明暗主题、模型、工具列表、关于；主题与布局服务端持久化（`.agent-settings.json`），重启 / 换浏览器不丢
+
+## 命令行模式（REPL）
+
+```bash
+python -m agent --resume "继续上一个任务：..."        # 从最近会话恢复
+python -m agent --resume-file sessions/session-xxx.jsonl "..."   # 指定会话恢复
+python -m agent --permission ask "任务"               # 审批模式：命令 / 提交需确认
+python -m agent --plan "任务"                         # 规划模式：先计划（只读探索）批准后执行
+python -m agent --version / --tools                  # 版本 / 列工具
+```
+
+REPL 内斜杠命令：`/stats`（token 统计）、`/tools`、`/clear`、`/help`、`/exit`。
 
 ## 配置
 
@@ -29,60 +69,41 @@ python -m agent                    # 交互式 REPL，多轮对话
 | `AGENT_MAX_CONTEXT_TOKENS` | `56000` | 上下文预算 |
 | `AGENT_MAX_STEPS` | `30` | 最大迭代步数 |
 
+Web 模式默认监听 `127.0.0.1:8080`，可用 `--port` 修改；`--mock` 无需 key 即可演示。
+
 ## 内置工具
 
 | 工具 | 说明 |
 |---|---|
 | `read_file` | 读取文件（带行号，分页） |
-| `write_file` | 创建/整体覆盖写入文件（UTF-8） |
+| `write_file` | 创建 / 整体覆盖写入文件（UTF-8） |
 | `edit_file` | 精确搜索-替换，保留原文件行尾风格 |
 | `undo_file` | 撤销最近一次修改（自动备份于 `.agent-backups/`） |
-| `list_dir` | 目录浏览（文件/子目录/大小） |
-| `search` | 递归搜索文件内容（子串/正则） |
+| `list_dir` | 目录浏览（文件 / 子目录 / 大小） |
+| `search` | 递归搜索文件内容（子串 / 正则） |
 | `glob` | 按 glob 模式查找文件（支持 `**` 递归） |
-| `run_command` | 执行 cmd 命令（超时 + 进程树终止 + 危险命令黑名单 + 实时输出） |
+| `run_command` | 执行命令（超时 + 进程树终止 + 危险命令黑名单 + 实时输出；支持后台运行） |
 | `git_status` / `git_diff` | 查看工作区改动 |
 | `git_commit` / `git_log` | 提交 / 查看提交历史 |
+| `start_subagent` / `start_subagents` | 派生子 agent（支持并行 / 异步批次、只读硬默认） |
+| `list_subagents` | 列出进行中的子 agent 批次 |
 | `finish` | 完成任务标记 |
 
 凭据文件（`.env` 系列）对 agent 不可读写、不可搜索。
 
-## 高级用法
+## 架构要点
 
-```bash
-python -m agent --resume "继续上一个任务：..."   # 从最近会话恢复历史继续干活
-python -m agent --resume-file sessions/session-xxx.jsonl "..."  # 指定会话恢复
-python -m agent --permission ask "任务"           # 审批模式：命令/提交需确认
-python -m agent --plan "任务"                     # 规划模式：先计划（只读探索）批准后执行
-python -m agent --web                             # 启动 Web UI（默认 http://127.0.0.1:8080）
-python -m agent --web --mock --port 8090          # Web UI 模拟模式（无需 API key）
-python -m agent --version                         # 版本
-python -m agent --tools                           # 列出全部工具
-```
-
-## Web UI
-
-本地网页界面（浏览器渲染事件流，SSE 实时推送）：
-
-- **左侧边栏**：工作区 / 会话树（可展开收起），底部"设置"入口
-- **多工作区**：可随时选择本地文件夹作为工作区（文件夹挑选器）；文件目录显示在右侧
-- **多会话**：每个工作区可建多个会话，会话名由首轮对话决定；点击会话即可在该会话内继续对话
-- **设置弹窗**（居中）：明暗主题切换、工具列表、关于；主题与侧栏布局服务端持久化（`.agent-settings.json`），重启服务 / 换浏览器不丢
-- **对话流**：模型回复流式显示，工具调用卡片可展开查看参数与结果；命令输出实时滚动；上下文管理（裁剪/压缩）透明可见
-- 输入栏"发送"按钮，发送后切换为"中断"（矢量图标）
-
-实现零额外依赖：后端为标准库 `http.server` + SSE，前端为纯 HTML/CSS/JS（可切换深色/浅色）。
-
-测试按模块拆分：`tests/run_all.py`（或单独 `python tests/test_tools.py` 等）。
-
-工作区记忆：`.agent-memory.md`（不入库）记录跨会话约定，会话开始自动注入上下文；agent 会在任务中更新它。
-
-REPL 内支持斜杠命令：`/stats`（token 统计）、`/tools`、`/clear`（清空历史）、`/help`、`/exit`。
+- **事件驱动**：主循环是事件源，只 `_emit()` 事件；CLI 渲染器 / Web SSE / JSONL 会话日志都是订阅者，互不耦合
+- **上下文管理**：双轨 token 计量 + 三层压缩策略（摘要压缩 → 整轮裁剪 → 硬截断）
+- **子 agent**：独立 ToolContext、共享工作区与后台管理；运行时以 `SubagentStarted/SubagentEvent/SubagentStatus` 事件流式上行
 
 ## 测试
 
 ```bash
-python tests/test_d1.py
+python tests/run_all.py            # 全量（纯标准库，无需 pytest）
+python tests/test_tools.py         # 单模块
 ```
 
-设计文档见 `DESIGN.md`。
+工作区记忆：`.agent-memory.md`（不入库）记录跨会话约定，会话开始自动注入上下文。
+
+设计文档见 `DESIGN.md`；精简提交版说明见 `README.txt`。
