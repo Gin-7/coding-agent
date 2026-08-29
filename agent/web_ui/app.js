@@ -182,6 +182,13 @@ function renderMarkdown(text) {
     listBuf = []; listOrdered = false;
   };
   const isItem = (l) => /^[-*] /.test(l) || /^\d+\.\s/.test(l);
+  // 表格列对齐解析（:--- / :---: / ---: / ---）
+  const parseTableAlign = (sep) => sep.replace(/^\s*\|?/, "").replace(/\|?\s*$/, "").split("|").map(c => {
+    c = c.trim(); if (!c) return "";
+    const l = c.startsWith(":"), r = c.endsWith(":");
+    if (l && r) return "center"; if (r) return "right"; if (l) return "left"; return "";
+  });
+  const alignAttr = (a, k) => a[k] ? ` style="text-align:${a[k]}"` : "";
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i].replace(/\s+$/, "");        // 去尾部空白
@@ -199,6 +206,30 @@ function renderMarkdown(text) {
       flushPara(); flushList();
       const h = Math.min(m[1].length + 1, 4);
       html += `<h${h}>${inline(m[2])}</h${h}>`;
+      continue;
+    }
+    // 表格（GFM）：表头行 + 分隔行（|---|）+ 数据行
+    const tblM = line.match(/^\s*\|(.+)\|\s*$/);
+    const isSepRow = (l) => /^\s*\|?[\s:|-]+\|?\s*$/.test(l) && l.includes("-");
+    if (tblM && i + 1 < lines.length && isSepRow(lines[i + 1].replace(/\s+$/, ""))) {
+      flushPara(); flushList();
+      const headers = tblM[1].split("|").map(c => c.trim());
+      const aligns = parseTableAlign(lines[i + 1]);
+      const rows = [];
+      let j = i + 2;
+      while (j < lines.length) {
+        const mm = lines[j].replace(/\s+$/, "").match(/^\s*\|(.+)\|\s*$/);
+        if (!mm) break;
+        rows.push(mm[1].split("|").map(c => c.trim()));
+        j++;
+      }
+      let t = '<table class="md-table"><thead><tr>'
+        + headers.map((h, k) => `<th${alignAttr(aligns, k)}>${inline(h)}</th>`).join("")
+        + '</tr></thead><tbody>';
+      for (const r of rows) t += '<tr>' + r.map((c, k) => `<td${alignAttr(aligns, k)}>${inline(c)}</td>`).join("") + '</tr>';
+      t += '</tbody></table>';
+      html += t;
+      i = j - 1;   // 跳过已处理行（循环尾 i++ 会再 +1）
       continue;
     }
     if (isItem(line)) {                                // 列表项（连续项合并为一个列表）
@@ -627,7 +658,33 @@ function autoGrow() {
 }
 input.addEventListener("input", autoGrow);
 autoGrow();
-permissionSelect.addEventListener("change", () => saveSettings({ permission: permissionSelect.value }));
+/* ---- 自定义权限下拉（替代原生 select） ---- */
+const PERM_LABELS = { auto: "自动编辑", ask: "变更前确认", plan: "计划模式" };
+const permissionMenu = document.getElementById("permission-menu");
+const permissionDropdown = document.getElementById("permission-dropdown");
+function setPermission(val, save) {
+  if (!PERM_LABELS[val]) val = "auto";
+  permissionSelect.querySelector(".cb-value").textContent = PERM_LABELS[val];
+  permissionMenu.querySelectorAll(".cb-opt").forEach(o => o.classList.toggle("selected", o.dataset.value === val));
+  permissionMenu.hidden = true;
+  permissionSelect.setAttribute("aria-expanded", "false");
+  if (save) saveSettings({ permission: val });
+}
+permissionSelect.addEventListener("click", (e) => {
+  e.stopPropagation();
+  const open = permissionMenu.hidden;
+  permissionMenu.hidden = !open;
+  permissionSelect.setAttribute("aria-expanded", String(open));
+});
+permissionMenu.querySelectorAll(".cb-opt").forEach(opt => {
+  opt.addEventListener("click", () => setPermission(opt.dataset.value, true));
+});
+document.addEventListener("click", (e) => {
+  if (!permissionDropdown.contains(e.target)) {
+    permissionMenu.hidden = true;
+    permissionSelect.setAttribute("aria-expanded", "false");
+  }
+});
 
 /* ---------- 文件夹选择器 ---------- */
 async function renderBrowse() {
@@ -758,7 +815,7 @@ async function loadSettings() {
     if (typeof s.model === "string" && s.model.trim()) document.getElementById("model-input").value = s.model;
     if (typeof s.model_url === "string") document.getElementById("model-url-input").value = s.model_url;
     if (typeof s.model_key === "string") document.getElementById("model-key-input").value = s.model_key;
-    if (s.permission === "auto" || s.permission === "ask" || s.permission === "plan") permissionSelect.value = s.permission;
+    if (s.permission === "auto" || s.permission === "ask" || s.permission === "plan") setPermission(s.permission, false);
   } catch (e) { }
 }
 

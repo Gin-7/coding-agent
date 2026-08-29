@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Coding Agent</title>
-<link rel="stylesheet" href="/style.css?v=27">
+<link rel="stylesheet" href="/style.css?v=31">
 </head>
 <body>
 <div id="middle">
@@ -49,12 +49,17 @@
         <textarea id="input" rows="1" placeholder="输入任务，Enter 发送，Shift+Enter 换行"></textarea>
         <div class="composer-bar">
           <div class="composer-left">
-            <span class="cb-label">权限</span>
-            <select id="permission-select" class="cb-select">
-              <option value="auto">自动编辑</option>
-              <option value="ask">变更前确认</option>
-              <option value="plan">计划</option>
-            </select>
+            <div class="cb-dropdown" id="permission-dropdown">
+              <button type="button" class="cb-trigger" id="permission-select" aria-haspopup="listbox" aria-expanded="false">
+                <span class="cb-value">自动编辑</span>
+                <svg class="cb-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>
+              </button>
+              <div class="cb-menu" id="permission-menu" role="listbox" hidden>
+                <button type="button" class="cb-opt selected" data-value="auto" role="option">自动编辑</button>
+                <button type="button" class="cb-opt" data-value="ask" role="option">变更前确认</button>
+                <button type="button" class="cb-opt" data-value="plan" role="option">计划模式</button>
+              </div>
+            </div>
           </div>
           <button id="btn-run" class="send" title="发送 / 停止">
             <span class="ic-send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M12 5l-6 6M12 5l6 6"/></svg></span>
@@ -157,6 +162,6 @@
   </div>
 </div>
 
-<script src="/app.js?v=20"></script>
+<script src="/app.js?v=30"></script>
 </body>
 </html>
