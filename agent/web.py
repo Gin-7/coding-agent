@@ -17,6 +17,7 @@ import datetime as _dt
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from .config import find_env_file
+from .events import ContextUsageEvent
 
 WEB_UI_DIR = Path(__file__).resolve().parent / "web_ui"
 SESSIONS_DIR_NAME = "sessions"
@@ -146,6 +147,7 @@ class WebAgentServer:
         self.system_prompt = ""
         self.budget = 56000
         self.budget_resolver = None
+        self.window_resolver = None
         self.workspaces = {str(workspace.root): workspace}
         self.run_thread = None
         self.interrupt_event = threading.Event()
@@ -206,7 +208,8 @@ class WebAgentServer:
         except (OSError, json.JSONDecodeError):
             return {}
         return {k: data[k] for k in ("theme", "sidebar_collapsed", "right_collapsed",
-                                     "model", "model_url", "model_key", "permission") if k in data}
+                                     "model", "model_url", "model_key", "permission",
+                                     "max_context_tokens", "max_tokens") if k in data}
 
     def _save_settings(self) -> None:
         try:
@@ -232,18 +235,60 @@ class WebAgentServer:
                 self.settings["model_url"] = patch["model_url"].strip()
             if isinstance(patch.get("model_key"), str):
                 self.settings["model_key"] = patch["model_key"].strip()
+            if "max_context_tokens" in patch:
+                try:
+                    self.settings["max_context_tokens"] = max(0, int(patch["max_context_tokens"]))
+                except (TypeError, ValueError):
+                    pass
+            if "max_tokens" in patch:
+                try:
+                    # 单次生成上限：限制合理区间 [256, 65536]，避免把非法/过小值写进 .env 导致启动异常
+                    self.settings["max_tokens"] = max(256, min(65536, int(patch["max_tokens"])))
+                except (TypeError, ValueError):
+                    pass
             if patch.get("permission") in ("auto", "ask", "plan"):
                 self.settings["permission"] = patch["permission"]
             self._save_settings()
             # 模型相关设置写回 .env，使面板改动与 .env 配置保持一致（.env 已被 gitignore）
             self._sync_env(patch)
             self._apply_permission_plan()
+            # 设置变更（尤其上下文窗口上限 / 模型）后主动广播一次上下文使用率，
+            # 使前端环形指示器的分母（预算/窗口）无需等到下条消息才刷新。
+            # 全新会话同样归零显示（仅刷新分母），避免把系统提示词估算当成"已使用"
+            loop = getattr(self, "loop", None)
+            if loop is not None:
+                if len(loop.ctx.messages) <= 1 and loop.ctx.last_prompt_tokens == 0:
+                    loop._emit(ContextUsageEvent(tokens=0, budget=loop.ctx._cur_budget(),
+                                                 window=loop.ctx._cur_window() or 0))
+                else:
+                    loop._emit_context_usage()
         return self.get_settings()
 
     def _sync_env(self, patch: dict) -> None:
-        """把面板改动的模型/BaseURL/Key 同步写回 .env（保留其余行/注释）。"""
-        mapping = {"model": "AGENT_MODEL", "model_url": "AGENT_BASE_URL", "model_key": "AGENT_API_KEY"}
-        wants = {mapping[k]: patch[k] for k in mapping if k in patch and patch[k] != ""}
+        """把面板改动的模型/BaseURL/Key/上下文上限 同步写回 .env（保留其余行/注释）。"""
+        mapping = {"model": "AGENT_MODEL", "model_url": "AGENT_BASE_URL", "model_key": "AGENT_API_KEY",
+                   "max_context_tokens": "AGENT_MAX_CONTEXT_TOKENS", "max_tokens": "AGENT_MAX_TOKENS"}
+        wants = {}
+        for k, env_key in mapping.items():
+            if k not in patch:
+                continue
+            val = patch[k]
+            if k in ("max_context_tokens", "max_tokens"):
+                # 仅接受合法整数并夹到安全区间，避免把非法值写进 .env 导致下次启动 Config 崩溃
+                try:
+                    ival = int(val)
+                except (TypeError, ValueError):
+                    continue
+                if k == "max_context_tokens":
+                    if ival < 0:
+                        continue
+                else:  # max_tokens：单次生成上限，限制 [256, 65536]
+                    ival = max(256, min(65536, ival))
+                wants[env_key] = str(ival)
+            else:
+                if val == "":
+                    continue
+                wants[env_key] = val
         if not wants:
             return
         env_path = find_env_file(self.workspace.root)
@@ -301,6 +346,7 @@ class WebAgentServer:
         self.system_prompt = loop.ctx.messages[0]["content"]
         self.budget = loop.ctx.budget
         self.budget_resolver = getattr(loop.ctx, "budget_resolver", None)
+        self.window_resolver = getattr(loop.ctx, "window_resolver", None)
         self._activate(self.workspace.get_active())
 
     # ---------- 工作区 ----------
@@ -349,12 +395,23 @@ class WebAgentServer:
             msgs = load_messages_for_session(path) if path.exists() else None
             rec.messages = msgs or self._fresh_messages()
         rec.writer = self._open_writer(rec)
-        ctx = Context(self.system_prompt, self.budget, budget_resolver=self.budget_resolver)
+        ctx = Context(self.system_prompt, self.budget, budget_resolver=self.budget_resolver,
+                      window_resolver=self.window_resolver)
         ctx.messages = list(rec.messages)
         self.loop.ctx = ctx
         # 关键：工具根目录同步到当前工作区（否则 agent 仍操作旧工作区）
         self.loop.tool_ctx.workspace = self.workspace.root
         self.workspace.active_filename = rec.filename
+        # 会话切换/新建后主动广播一次上下文使用率，使前端环形指示器无需等到下条消息才刷新
+        loop = getattr(self, "loop", None)
+        if loop is not None:
+            # 全新会话（仅含系统提示词、尚无任何对话、且本次进程未发过请求）→ 环形归零显示，
+            # 避免把系统提示词的启发式估算(~1K)当成"已使用"展示；首次请求后由 run() 内的广播接手计数
+            if len(loop.ctx.messages) <= 1 and loop.ctx.last_prompt_tokens == 0:
+                loop._emit(ContextUsageEvent(tokens=0, budget=loop.ctx._cur_budget(),
+                                             window=loop.ctx._cur_window() or 0))
+            else:
+                loop._emit_context_usage()
 
     def _fresh_messages(self) -> list:
         return [{"role": "system", "content": self.system_prompt}]
@@ -794,17 +851,18 @@ def _build_loop(workspace: Path, args, on_event, hub, web):
     from .tools import ToolContext, register_all
 
     register_all()
+    # 统一加载配置（读 .env），mock/real 均尊重 AGENT_MAX_CONTEXT_TOKENS 上限
+    from .config import Config
+    cfg = Config(workspace, model=args.model, base_url=args.base_url, api_key=args.api_key,
+                 max_steps=args.max_steps, max_context_tokens=args.budget)
     budget_resolver = None
+    window_resolver = None
     if args.mock:
         from .mock import MockLLM
         llm = MockLLM()
-        budget = 56000
     else:
-        from .config import Config
         from .llm import LLMClient
-        from .models import context_window_for, budget_for_window
-        cfg = Config(workspace, model=args.model, base_url=args.base_url, api_key=args.api_key,
-                     max_steps=args.max_steps, max_context_tokens=args.budget)
+        from .models import context_window_for
         # 固定兜底：CLI 参数 > .env/default（resolver 在 CLI 缺省时再实时读 Web 面板）
         fallback_model = args.model or cfg.model
         fallback_base_url = args.base_url or cfg.base_url
@@ -813,6 +871,16 @@ def _build_loop(workspace: Path, args, on_event, hub, web):
         model_resolver = lambda: args.model or web.settings.get("model") or fallback_model
         base_url_resolver = lambda: args.base_url or web.settings.get("model_url") or fallback_base_url
         api_key_resolver = lambda: args.api_key or web.settings.get("model_key") or fallback_api_key
+        def max_tokens_resolver():
+            # 热切换：每次请求实时读 Web 设置面板，改完即对新请求生效，无需重启
+            raw = web.settings.get("max_tokens")
+            if raw in (None, ""):
+                raw = cfg.max_tokens
+            try:
+                v = int(raw)
+            except (TypeError, ValueError):
+                v = 0
+            return v if v and v > 0 else cfg.max_tokens
         if not api_key_resolver():
             raise SystemExit(
                 "未找到 API key：请设置环境变量 AGENT_API_KEY / DEEPSEEK_API_KEY，"
@@ -822,21 +890,44 @@ def _build_loop(workspace: Path, args, on_event, hub, web):
                         model=fallback_model,
                         temperature=cfg.temperature, max_tokens=cfg.max_tokens, timeout=cfg.timeout,
                         model_resolver=model_resolver, base_url_resolver=base_url_resolver,
-                        api_key_resolver=api_key_resolver)
-        budget = cfg.max_context_tokens
-        # 预算热切换：按当前模型真实窗口推导预算（扣输出上限+余量），未知模型回退固定值
-        def budget_resolver():
-            win = context_window_for(model_resolver())
-            if not win:
-                return cfg.max_context_tokens
-            return budget_for_window(win, cfg.max_tokens)
+                        api_key_resolver=api_key_resolver, max_tokens_resolver=max_tokens_resolver)
+    # 有效上限：用户设置的硬上限优先，否则模型真实窗口（mock/未知回退 56000）。
+    # 预算 = 有效上限 * 0.90，即保留 10% 安全余量、压缩触发点落在 90%（设上限或满窗口统一）。
+    # 优先读 Web 设置面板（可热切换，改完即对新请求生效），回退 .env/default。
+    def _resolve_cap():
+        raw = web.settings.get("max_context_tokens")
+        if raw in (None, ""):
+            raw = cfg.max_context_tokens
+        try:
+            v = int(raw)
+        except (TypeError, ValueError):
+            v = 0
+        return v if v and v > 0 else None
+    def _resolve_effective_window():
+        """有效上限（token）：cap 优先；否则取模型真实窗口（mock/未知回退 56000）。
+        同时作为预算分母与 UI 显示上限；cap 不超过真实窗口以防越界 400。"""
+        cap = _resolve_cap()
+        real = context_window_for(model_resolver()) if not args.mock else None
+        if cap:
+            return min(cap, real) if real else cap
+        return real or 56000
+    def budget_resolver():
+        eff = _resolve_effective_window()
+        # 保留 10% 安全余量：压缩触发点 = 90% 有效窗口（cap 或真实窗口）
+        return max(1024, int(eff * 0.90))
+    def window_resolver():
+        # 有效上限（cap 或真实窗口），前端悬停以此做分母，统一显示"设置值/完整窗口"
+        return _resolve_effective_window()
+    budget_cap = _resolve_cap()
+    budget = max(1024, int((budget_cap or 56000) * 0.90))  # 固定兜底（resolver 缺省时）
     # 授权/计划：Web UI 运行时设置 > CLI 参数（--permission ask / --plan）> 默认 auto
     permission = web.settings.get("permission")
     if not permission:
         permission = "plan" if args.plan else ("ask" if args.permission == "ask" else "auto")
     plan = permission == "plan"
     confirm = web.confirm if permission == "ask" else None  # plan 只读+做计划，不逐次确认
-    ctx = Context(make_system_prompt(workspace), budget, budget_resolver=budget_resolver)
+    ctx = Context(make_system_prompt(workspace), budget, budget_resolver=budget_resolver,
+                  window_resolver=window_resolver)
     return AgentLoop(llm, ctx, ToolContext(workspace), max_steps=args.max_steps or 30,
                      on_event=on_event, confirm=confirm, plan_mode=plan,
                      interrupt_event=web.interrupt_event)
@@ -845,7 +936,9 @@ def _build_loop(workspace: Path, args, on_event, hub, web):
 def run_server(workspace: Path, args, port: int = 8080, open_browser: bool = True) -> None:
     """启动 Web 服务器并阻塞（cli 的 --web 入口）。"""
     def factory(on_event, hub, web):
-        return _build_loop(workspace, args, on_event, hub, web)
+        # 用「当前激活工作区」读 .env（含 AGENT_MAX_CONTEXT_TOKENS 上限），而非 server 启动目录，
+        # 否则在 coding-agent 启动、UI 切到 test 时仍读 coding-agent/.env，压窗设置不生效。
+        return _build_loop(web.workspace.root, args, on_event, hub, web)
 
     httpd, web = create_server(workspace, factory, port)
     addr = f"http://127.0.0.1:{httpd.server_address[1]}"

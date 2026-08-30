@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Coding Agent</title>
-<link rel="stylesheet" href="/style.css?v=45">
+<link rel="stylesheet" href="/style.css?v=51">
 </head>
 <body>
 <div id="middle">
@@ -61,11 +61,12 @@
               </div>
             </div>
           </div>
-          <div id="ctx-ring" class="ctx-ring" title="当前上下文窗口使用率" aria-label="上下文窗口使用率">
+          <div id="ctx-ring" class="ctx-ring" aria-label="上下文窗口使用率">
             <svg viewBox="0 0 24 24" width="20" height="20">
               <circle class="ring-bg" cx="12" cy="12" r="10"></circle>
               <circle class="ring-fg" cx="12" cy="12" r="10"></circle>
             </svg>
+            <div id="ctx-tip" class="ctx-tip"></div>
           </div>
           <button id="btn-run" class="send" title="发送 / 停止">
             <span class="ic-send"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V5M12 5l-6 6M12 5l6 6"/></svg></span>
@@ -169,6 +170,7 @@
 <!-- 设置弹窗（居中，左侧菜单栏，固定大小，点击外部关闭） -->
 <div id="settings" class="modal hidden">
   <div class="settings-box">
+    <button class="settings-close icon-close" id="btn-settings-close" aria-label="关闭设置" title="关闭设置">✕</button>
     <div class="settings-menu">
       <div class="settings-title">设置</div>
       <button class="st active" data-tab="appearance">外观</button>
@@ -199,8 +201,18 @@
           <label class="field-label" for="model-key-input">API Key</label>
           <input id="model-key-input" class="settings-input" type="password" placeholder="sk-..." autocomplete="off" spellcheck="false">
         </div>
+        <div class="field-row">
+          <label class="field-label" for="max-context-input">上下文窗口上限 (tokens)</label>
+          <input id="max-context-input" class="settings-input" type="number" min="0" step="1000" placeholder="0 = 完整模型窗口" autocomplete="off" spellcheck="false">
+        </div>
+
+        <div class="field-row">
+          <label class="field-label" for="max-tokens-input">单次生成最大 token (max_tokens)</label>
+          <input id="max-tokens-input" class="settings-input" type="number" min="256" step="256" placeholder="8192" autocomplete="off" spellcheck="false">
+        </div>
 
         <p class="field-hint">设置后下一次运行生效。模型名 / Base URL / API Key 会优先于工作区 .env 中的同名配置；留空则沿用 .env。API Key 以明文保存在本地 .agent-settings.json，请勿在共享环境使用。</p>
+        <p class="field-hint">上下文窗口上限：设为大于 0 的 token 数作为上下文硬上限（可临时压小窗口测试压缩），设为 0（默认）则使用模型完整窗口。该值会写回工作区 .env 的 AGENT_MAX_CONTEXT_TOKENS，并在运行中热切换生效。</p>
       </div>
       <div id="tab-about" class="stab"><h4>关于</h4><p class="about-text">Coding Agent · 自研编程智能体<br>事件驱动架构 · 零框架依赖</p></div>
     </div>
@@ -224,6 +236,6 @@
 <!-- 审批提示已改为非阻塞浮层（#confirm-toast，位于 main#chat 内） -->
 
 
-<script src="/app.js?v=45"></script>
+<script src="/app.js?v=54"></script>
 </body>
 </html>

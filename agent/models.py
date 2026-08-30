@@ -125,6 +125,10 @@ def context_window_for(model: str) -> Optional[int]:
 
 
 def budget_for_window(window: int, max_tokens: int) -> int:
-    """由真实窗口推导实际预算：扣除输出上限 + 安全余量（防 heuristic 低估导致 400）。"""
-    reserve = max(2048, int(window * 0.04))
+    """由真实窗口推导实际预算：扣除输出上限 + 安全余量（防 heuristic 低估导致 400）。
+
+    安全余量取窗口的 10%（下限 4096）：heuristic 估算对英文代码偏乐观，余量过小时
+    容易低估真实 token 数，使发给 LLM 的 prompt 顶穿真实窗口触发 400。
+    """
+    reserve = max(4096, int(window * 0.10))
     return max(4096, window - max_tokens - reserve)

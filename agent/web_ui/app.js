@@ -43,19 +43,38 @@ function showEmpty(show) { document.getElementById("empty").style.display = show
 /* 上下文窗口环形指示器：根据当前 token 数与预算，更新进度环（无中心文字） */
 const ctxRing = document.getElementById("ctx-ring");
 const ctxRingFg = ctxRing ? ctxRing.querySelector(".ring-fg") : null;
+const ctxTip = document.getElementById("ctx-tip");
 const RING_CIRC = 2 * Math.PI * 10;  // r=10
-function updateContextRing(tokens, budget) {
+/* 模型完整窗口：百万用 M、其余用 K（如 1000000 -> 1M，128000 -> 128K） */
+function fmtWindow(n) {
+  if (!n || n <= 0) return "0";
+  if (n >= 1000000) {
+    const m = n / 1000000;
+    return (m % 1 === 0 ? m.toFixed(0) : m.toFixed(1)) + "M";
+  }
+  const k = n / 1000;
+  return (k % 1 === 0 ? k.toFixed(0) : k.toFixed(1)) + "K";
+}
+function updateContextRing(tokens, budget, window) {
   if (!ctxRingFg || !budget || budget <= 0) return;
-  const pct = Math.max(0, Math.min(1, tokens / budget));
+  // 分母选择：完整窗口已知且预算未被 cap 限制（budget≈窗口*0.9）时，用「模型完整窗口」
+  // 做分母，使百分比直观表示"占窗口比例"——达 90%（安全余量 10%）即临近压缩；
+  // 否则（cap 生效或窗口未知）用预算 budget 做分母（压缩在占满 budget 时触发）。
+  const denom = (window && window > 0 && budget >= window * 0.8) ? window : budget;
+  const pct = Math.max(0, Math.min(1, tokens / denom));
   // 环进度（dashoffset 越小越满）
   ctxRingFg.style.strokeDashoffset = String(RING_CIRC * (1 - pct));
-  // 颜色分级：<60% 正常 / 60%~85% 警戒 / >85% 危险
-  let color;
-  if (pct < 0.6) color = "var(--accent)";
-  else if (pct < 0.85) color = "#eab308";
-  else color = "var(--red)";
-  ctxRingFg.style.stroke = color;
-  ctxRing.title = "上下文窗口使用率 " + Math.round(pct * 100) + "%（" + tokens.toLocaleString() + " / " + budget.toLocaleString() + " tokens）";
+  // 环进度固定用主题色，不随百分比变色
+  ctxRingFg.style.stroke = "var(--accent)";
+  // 悬停提示：仅自定义气泡（去掉原生 title 重复），格式「上下文已使用 x%（used / 窗口）」
+  const pctInt = Math.round(pct * 100);
+  const tip = "上下文已使用 " + pctInt + "%（" + fmtWindow(tokens) + " / " + fmtWindow(denom) + "）";
+  if (ctxTip) ctxTip.textContent = tip;
+}
+/* 悬停：高亮环 + 上方显示提示 */
+if (ctxRing) {
+  ctxRing.addEventListener("mouseenter", () => { if (ctxTip) ctxTip.classList.add("show"); });
+  ctxRing.addEventListener("mouseleave", () => { if (ctxTip) ctxTip.classList.remove("show"); });
 }
 function addBubble(cls, text, parent, scroll) {
   const b = document.createElement("div");
@@ -333,7 +352,7 @@ function render(ev, opts) {
       addSystem("step " + ev.step + "/" + ev.max_steps, "step", turn);
       break;
     case "ContextUsageEvent":
-      updateContextRing(ev.tokens, ev.budget);
+      updateContextRing(ev.tokens, ev.budget, ev.window);
       break;
     case "ToolCallEvent": {
       if (ev.name === "finish") break;   // finish 以正文气泡渲染，不画工具卡片
@@ -379,8 +398,8 @@ function render(ev, opts) {
     }
     case "TrimmedEvent": addSystem("[上下文] 预算紧张，已裁剪最老的 " + ev.rounds + " 轮工具调用", "", turn); break;
     case "CompactedEvent":
-      addSystem(ev.summarized ? "[上下文] 已把早期 " + ev.messages_removed + " 条消息压缩为摘要"
-                              : "[上下文] 已丢弃早期 " + ev.messages_removed + " 条消息", "", turn);
+      addSystem(ev.summarized ? "[上下文] 已把早期对话压缩为摘要"
+                              : "[上下文] 已丢弃早期对话记录", "", turn);
       break;
     case "ErrorEvent": addIconNote("warn", ev.message, "error", turn); break;
     case "FinishEvent": {
@@ -804,6 +823,7 @@ async function newSessionInWorkspace(root) {
 /* ---------- 设置弹窗 ---------- */
 const settingsEl = document.getElementById("settings");
 document.getElementById("btn-settings").addEventListener("click", () => settingsEl.classList.remove("hidden"));
+document.getElementById("btn-settings-close").addEventListener("click", () => settingsEl.classList.add("hidden"));
 // 点击面板外部关闭
 settingsEl.addEventListener("click", e => { if (e.target === settingsEl) settingsEl.classList.add("hidden"); });
 document.querySelectorAll(".st[data-tab]").forEach(btn => btn.addEventListener("click", () => {
@@ -909,6 +929,14 @@ document.getElementById("model-url-input").addEventListener("change", e => {
 });
 document.getElementById("model-key-input").addEventListener("change", e => {
   saveSettings({ model_key: e.target.value.trim() });
+});
+document.getElementById("max-context-input").addEventListener("change", e => {
+  const v = parseInt(e.target.value, 10);
+  saveSettings({ max_context_tokens: (Number.isFinite(v) && v > 0) ? v : 0 });
+});
+document.getElementById("max-tokens-input").addEventListener("change", e => {
+  const v = parseInt(e.target.value, 10);
+  saveSettings({ max_tokens: (Number.isFinite(v) && v >= 256) ? v : 8192 });
 });
 
 /* ---------- 审批（非阻塞浮层：不遮罩全屏，可继续浏览 / 滚动 / 操作，可收起为小条） ---------- */
@@ -1128,6 +1156,8 @@ async function loadSettings() {
     if (typeof s.model === "string" && s.model.trim()) document.getElementById("model-input").value = s.model;
     if (typeof s.model_url === "string") document.getElementById("model-url-input").value = s.model_url;
     if (typeof s.model_key === "string") document.getElementById("model-key-input").value = s.model_key;
+    if (typeof s.max_context_tokens === "number") document.getElementById("max-context-input").value = s.max_context_tokens;
+    if (typeof s.max_tokens === "number") document.getElementById("max-tokens-input").value = s.max_tokens;
     if (s.permission === "auto" || s.permission === "ask" || s.permission === "plan") setPermission(s.permission, false);
   } catch (e) { }
 }

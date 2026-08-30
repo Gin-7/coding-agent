@@ -79,9 +79,10 @@ class CompactedEvent:
 
 @dataclass
 class ContextUsageEvent:
-    """上下文窗口使用情况（UI 环形指示器用）：当前估算 token 数与当前预算（窗口）。"""
+    """上下文窗口使用情况（UI 环形指示器用）：当前估算 token 数、当前预算、真实模型窗口。"""
     tokens: int
     budget: int
+    window: int = 0  # 真实模型上下文窗口（token）；0 表示未知（如 mock 模式）
 
 
 @dataclass

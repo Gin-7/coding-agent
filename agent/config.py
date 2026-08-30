@@ -8,7 +8,7 @@ DEFAULTS = {
     "AGENT_BASE_URL": "https://api.deepseek.com",
     "AGENT_TEMPERATURE": "0.0",
     "AGENT_MAX_TOKENS": "4096",
-    "AGENT_MAX_CONTEXT_TOKENS": "56000",
+    "AGENT_MAX_CONTEXT_TOKENS": "0",
     "AGENT_MAX_STEPS": "30",
     "AGENT_TIMEOUT": "120",
 }

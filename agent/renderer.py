@@ -48,9 +48,9 @@ class CliRenderer:
             print(_c("33", f"\n[上下文] 预算紧张，已裁剪最老的 {ev.rounds} 轮工具调用"))
         elif isinstance(ev, CompactedEvent):
             if ev.summarized:
-                print(_c("33", f"\n[上下文] 已把早期 {ev.messages_removed} 条消息压缩为摘要"))
+                print(_c("33", f"\n[上下文] 已把早期对话压缩为摘要"))
             else:
-                print(_c("33", f"\n[上下文] 已丢弃早期 {ev.messages_removed} 条消息"))
+                print(_c("33", f"\n[上下文] 已丢弃早期对话记录"))
         elif isinstance(ev, BackgroundStarted):
             print(_c("35", f"\n⏳ 后台任务 {ev.task_id} 启动 (pid={ev.pid}): {ev.command}"))
         elif isinstance(ev, BackgroundOutput):

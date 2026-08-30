@@ -268,7 +268,9 @@ class AgentLoop:
     def _emit_context_usage(self) -> None:
         """广播当前上下文窗口使用率（环形指示器数据）；子 agent 也调用，其事件被包裹为
         SubagentEvent，不会污染主 agent 的环形指示器。"""
-        self._emit(ContextUsageEvent(tokens=self.ctx.estimated_tokens(), budget=self.ctx._cur_budget()))
+        self._emit(ContextUsageEvent(tokens=self.ctx.estimated_tokens(),
+                                     budget=self.ctx._cur_budget(),
+                                     window=self.ctx._cur_window() or 0))
 
     def _manage_context(self) -> None:
         """预算管理三层策略：compaction（保留语义）→ 裁剪（免费兜底）→ 硬截断（最后手段）。"""
@@ -306,6 +308,8 @@ class AgentLoop:
             self.ctx.add({"role": "user", "content": "【工具执行结果】\n" + result["output"]})
         else:
             self.ctx.add({"role": "tool", "tool_call_id": call.call_id, "content": result["output"]})
+        # 方案A：工具结果追加后立即查一次压缩，避免"读大文件"等单步爆冲要等到下一步开头才压
+        self._manage_context()
         self._emit_context_usage()
 
     def _plan_pending(self) -> bool:
@@ -334,6 +338,7 @@ class AgentLoop:
             self.ctx.add({"role": "user",
                           "content": "【计划模式】请用只读工具探索现状，制定一份可执行的计划；本模式只做计划、不执行任何修改，完成后调用 finish 并把计划作为总结。"})
         text_only_streak = 0
+        parse_fail_streak = 0  # 连续工具调用解析失败计数（C：防止模型反复生成超大/非法工具调用死循环）
 
         for step in range(1, self.max_steps + 1):
             r = self._interrupted(step)
@@ -369,9 +374,23 @@ class AgentLoop:
                 try:
                     actions = parse_tool_calls(tool_calls_raw, TOOLS)
                 except ParseError as e:
-                    self.ctx.add({"role": "user", "content": f"工具调用解析失败：{e}。请重新以正确的格式调用工具。"})
+                    parse_fail_streak += 1
+                    if parse_fail_streak >= 2:
+                        # 连续两次工具调用解析失败：模型大概率在尝试把整个大文件塞进单个
+                        # 工具调用参数（被 max_tokens 截断 / JSON 非法）。主动纠正并终止，
+                        # 避免无意义的死循环持续消耗 token（防空转不覆盖"有调用但解析失败"的情况）。
+                        self.ctx.add({"role": "user", "content":
+                            f"工具调用解析失败：{e}。你连续多次生成的工具调用参数过大或格式非法"
+                            f"（很可能试图一次性整体重写大文件）。请改用 edit_file 做小段精确替换，"
+                            f"或分段多次写入；单次工具调用的参数不要过大。若仍无法生成合法调用，请调用 finish 结束任务。"})
+                        self._emit(ErrorEvent("模型连续多次工具调用解析失败，任务中止"))
+                        return {"status": "stopped", "message": "模型工具调用持续解析失败"}
+                    self.ctx.add({"role": "user", "content":
+                        f"工具调用解析失败：{e}。请改用 edit_file 做小段精确替换（不要整体重写大文件），"
+                        f"单次工具调用的参数不要过大，并以合法 JSON 重新调用工具。"})
                     continue
             else:
+                parse_fail_streak = 0  # 文本路径（无原生工具调用）→ 非解析失败，重置计数
                 rest, calls = parse_text_protocol(content, TOOLS)
                 content = rest
                 actions = calls
@@ -401,6 +420,7 @@ class AgentLoop:
                 continue
 
             text_only_streak = 0
+            parse_fail_streak = 0  # 成功产出工具调用/文本协议调用，解析失败计数归零
 
             # 5. 分派执行。注意：finish 也按普通工具执行并回写结果——
             #    若直接 return，历史中会留下无 tool 结果配对的 assistant tool_calls，

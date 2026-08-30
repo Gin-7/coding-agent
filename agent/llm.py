@@ -31,6 +31,7 @@ class LLMClient:
         model_resolver: Optional[callable] = None,
         base_url_resolver: Optional[callable] = None,
         api_key_resolver: Optional[callable] = None,
+        max_tokens_resolver: Optional[callable] = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -43,6 +44,7 @@ class LLMClient:
         self.model_resolver = model_resolver
         self.base_url_resolver = base_url_resolver
         self.api_key_resolver = api_key_resolver
+        self.max_tokens_resolver = max_tokens_resolver
 
     # ---------- 热切换解析 ----------
 
@@ -67,6 +69,13 @@ class LLMClient:
                 return v
         return self.api_key
 
+    def _cur_max_tokens(self) -> int:
+        if self.max_tokens_resolver is not None:
+            v = self.max_tokens_resolver()
+            if v and v > 0:
+                return v
+        return self.max_tokens
+
     # ---------- 内部 ----------
 
     def _payload(self, messages: list, tools: Optional[list], stream: bool) -> dict:
@@ -74,7 +83,7 @@ class LLMClient:
             "model": self._cur_model(),
             "messages": messages,
             "temperature": self.temperature,
-            "max_tokens": self.max_tokens,
+            "max_tokens": self._cur_max_tokens(),
             "stream": stream,
         }
         if tools:
