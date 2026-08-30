@@ -287,6 +287,79 @@ def test_subagent_returns_result(tmp):
     assert "run_command" not in names and "read_file" in names
 
 
+def test_convergence_hint_at_75pct(tmp):
+    """步数到 75% 仍未 finish：注入收敛强提示（实测子 agent 会死在反复修补辅助脚本上）。"""
+    from agent.context import Context
+    from agent.loop import AgentLoop
+    from agent.prompts import make_system_prompt
+    from agent.tools import ToolContext, register_all
+    register_all()
+
+    class WanderLLM:
+        """前 3 步各读一个不同文件（不触发连续重复检测），第 4 步 finish。"""
+        def __init__(self):
+            self.n = 0
+
+        def chat_stream(self, messages, tools=None):
+            self.n += 1
+            files = ["a.txt", "b.txt", "c.txt"]
+            if self.n <= 3:
+                yield {"type": "done", "content": "", "finish_reason": "tool_calls", "usage": None,
+                       "tool_calls": [{"id": "r%d" % self.n, "name": "read_file",
+                                       "arguments": json.dumps({"path": files[self.n - 1]})}]}
+            else:
+                yield {"type": "done", "content": "", "finish_reason": "tool_calls", "usage": None,
+                       "tool_calls": [{"id": "f", "name": "finish",
+                                       "arguments": json.dumps({"summary": "收尾"})}]}
+
+    ws = make_ws(tmp, "converge")
+    (ws / "a.txt").write_text("1", encoding="utf-8")
+    (ws / "b.txt").write_text("2", encoding="utf-8")
+    (ws / "c.txt").write_text("3", encoding="utf-8")
+    loop = AgentLoop(WanderLLM(), Context(make_system_prompt(str(ws)), 56000),
+                     ToolContext(ws), max_steps=4, on_event=None)
+    assert loop.run("随便看看")["status"] == "finished"
+    hints = [m.get("content") for m in loop.ctx.messages
+             if m["role"] == "user" and "收敛提示" in (m.get("content") or "")]
+    assert len(hints) == 1 and "剩余步数" in hints[0]
+
+
+def test_failed_command_guard(tmp):
+    """同一条命令连续失败 3 次：注入换方案提示（每次失败后参数不同 → 连续重复检测覆盖不到）。"""
+    import json
+    import sys
+    from agent.context import Context
+    from agent.loop import AgentLoop
+    from agent.prompts import make_system_prompt
+    from agent.tools import ToolContext, register_all
+    register_all()
+
+    fail_cmd = '"%s" -c "import sys; sys.exit(3)"' % sys.executable
+
+    class RetryLoopLLM:
+        def __init__(self):
+            self.n = 0
+
+        def chat_stream(self, messages, tools=None):
+            self.n += 1
+            if self.n <= 3:
+                yield {"type": "done", "content": "", "finish_reason": "tool_calls", "usage": None,
+                       "tool_calls": [{"id": "c%d" % self.n, "name": "run_command",
+                                       "arguments": json.dumps({"command": fail_cmd})}]}
+            else:
+                yield {"type": "done", "content": "", "finish_reason": "tool_calls", "usage": None,
+                       "tool_calls": [{"id": "f", "name": "finish",
+                                       "arguments": json.dumps({"summary": "放弃并总结"})}]}
+
+    ws = make_ws(tmp, "cmdguard")
+    loop = AgentLoop(RetryLoopLLM(), Context(make_system_prompt(str(ws)), 56000),
+                     ToolContext(ws), max_steps=10, on_event=None)
+    assert loop.run("跑命令")["status"] == "finished"
+    hints = [m.get("content") for m in loop.ctx.messages
+             if m["role"] == "user" and "已失败 3 次" in (m.get("content") or "")]
+    assert len(hints) == 1
+
+
 def test_subagent_depth_guard(tmp):
     from agent.context import Context
     from agent.loop import AgentLoop

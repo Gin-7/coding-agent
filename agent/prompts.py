@@ -26,6 +26,7 @@ def make_system_prompt(workspace) -> str:
 - 命令输出可能被截断（超 3000 字符），需要完整内容时用 read_file 读取文件
 - 长耗时命令（如 dev server、长构建、安装）用 start_background 后台执行，不阻塞其他工作；之后用 poll_background 查询、stop_background 停止
 - 需要并行探索/拆解大任务时：spawn_subagent 派单个、spawn_subagents 派多个（同步等待合并）；如需"先派出去、主 agent 继续干活、稍后收结果"用 start_subagents + wait_subagents + list_subagent_batches
+- 派发子 agent 时，prompt 里引用的文件一律用相对当前工作区根目录的相对路径（不要写绝对路径）；写类任务记得设 allow_write=true（默认只读）
 - 子 agent 默认只读（写/执行会被拒绝）；除非确有必要才把 allow_write 设为 true，且要谨慎
 
 完成标准：

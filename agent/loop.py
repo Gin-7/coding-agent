@@ -4,6 +4,7 @@
 终止条件：finish 工具 / 达最大步数 / 用户中断 / API 重试耗尽 / 模型连续空转。
 """
 import json
+import re
 import threading
 
 from .background import BackgroundManager
@@ -29,7 +30,7 @@ SUBAGENT_SPAWN_TOOLS = ("spawn_subagent", "spawn_subagents", "start_subagents")
 READONLY_TOOLS = ("read_file", "list_dir", "search", "glob", "git_status", "git_diff")
 PLAN_TOOLS = READONLY_TOOLS
 MAX_SUBAGENT_DEPTH = 2     # 子 agent 嵌套深度上限（不能再 spawn 的防线）
-MAX_SUBAGENT_STEPS = 20    # 子 agent 步数上限
+MAX_SUBAGENT_STEPS = 30    # 子 agent 步数上限（审查/分析类任务需要读完大文件再产出，太紧会半途而废）
 MAX_PARALLEL_SUBAGENTS = 4  # 并行子 agent 上限
 
 _subagent_counter = 0
@@ -78,6 +79,9 @@ class AgentLoop:
         # 不加锁会撞上 "dictionary changed size during iteration"
         self._sub_lock = threading.Lock()
         self._finish_hinted = False  # 防空转提示只注入一次（见 _maybe_hint_finish）
+        self._converge_hinted = False  # 步数 75% 处的收敛强提示（同上，每次 run 一次）
+        self._cmd_fail = {}    # run_command 失败计数：同一条命令失败多次 → 注入换方案提示
+        self._cmd_hinted = set()
         self._last_action_sig = None  # 上一轮工具调用签名（重复调用检测用）
         self._repeat_streak = 0
 
@@ -108,7 +112,7 @@ class AgentLoop:
         运行期间通过 on_event 包装器把逐事件上浮为 SubagentEvent，并在启动/结束时广播
         SubagentStarted / SubagentStatus（供 Web UI 实时展示“运行中”与对话式详情）。
         """
-        steps = max(1, min(int(max_steps or 8), MAX_SUBAGENT_STEPS))
+        steps = max(1, min(int(max_steps or 12), MAX_SUBAGENT_STEPS))
         if allow_write:
             allowed = set(tools) if tools else None   # None = 全部工具
         else:
@@ -155,7 +159,7 @@ class AgentLoop:
             self._emit(SubagentEvent(sub_id, batch_id, d))
         return cb
 
-    def _run_subagent(self, prompt: str, max_steps: int = 8, tools=None, allow_write: bool = False) -> str:
+    def _run_subagent(self, prompt: str, max_steps: int = 12, tools=None, allow_write: bool = False) -> str:
         """运行一个独立的子 agent（同步），返回有界结果字符串。"""
         if self.subagent_depth >= self.MAX_SUBAGENT_DEPTH:
             return "达子 agent 嵌套深度上限，不再派生"
@@ -178,7 +182,7 @@ class AgentLoop:
             try:
                 sub_id = _next_subagent_id()
                 status, summary = self._run_subagent_inner(
-                    sub_id, batch_id, t.get("prompt", ""), t.get("max_steps", 8),
+                    sub_id, batch_id, t.get("prompt", ""), t.get("max_steps", 12),
                     t.get("tools"), bool(t.get("allow_write")))
                 results[i] = summary
             except Exception as e:  # noqa: BLE001
@@ -214,7 +218,7 @@ class AgentLoop:
             try:
                 sub_id = _next_subagent_id()
                 status, summary = self._run_subagent_inner(
-                    sub_id, batch_id, t.get("prompt", ""), t.get("max_steps", 8),
+                    sub_id, batch_id, t.get("prompt", ""), t.get("max_steps", 12),
                     t.get("tools"), bool(t.get("allow_write")))
                 results[i] = summary
             except Exception as e:  # noqa: BLE001
@@ -316,10 +320,20 @@ class AgentLoop:
         （末尾变成 tool 消息），会导致过半之后**每一步**都重复注入同一句提示，
         既刷屏又白烧 token。
         """
-        if step <= self.max_steps // 2 or self._finish_hinted:
+        if self._finish_hinted and self._converge_hinted:
             return
-        self._finish_hinted = True
-        self.ctx.add({"role": "user", "content": "（提示：若任务已完成，请调用 finish 工具结束任务，不要做多余操作。）"})
+        if step > self.max_steps // 2 and not self._finish_hinted:
+            self._finish_hinted = True
+            self.ctx.add({"role": "user", "content": "（提示：若任务已完成，请调用 finish 工具结束任务，不要做多余操作。）"})
+        if step >= int(self.max_steps * 0.75) and not self._converge_hinted:
+            # 步数即将耗尽：推一把收敛。实测子 agent 会死在"反复修补自己的辅助脚本"上，
+            # 到这一步还差得远就该止损总结，而不是继续开新调试。
+            self._converge_hinted = True
+            remain = self.max_steps - step
+            self.ctx.add({"role": "user", "content":
+                f"（收敛提示：剩余步数仅约 {remain} 步。请立即收敛：完成当前核心目标后调用 finish；"
+                "尚未完成的子项在总结中说明，不要再展开新的调试、新的文件或新的方案；"
+                "如果某个辅助脚本/检查难以修好，直接放弃它并在总结中注明。）"})
 
     def _append_tool_result(self, call, result: dict, text_protocol: bool) -> None:
         if text_protocol:
@@ -356,6 +370,9 @@ class AgentLoop:
         # 这样 RunResult 报的是"这一轮花了多少"，而不是跨轮累加的总账。
         self.ctx.reset_round_usage()
         self.ctx.add({"role": "user", "content": task})
+        self._repeat_streak = 0
+        self._cmd_fail = {}
+        self._cmd_hinted = set()
         if self.plan_mode:
             self.ctx.add({"role": "user",
                           "content": "【计划模式】请用只读工具探索现状，制定一份可执行的计划；本模式只做计划、不执行任何修改，完成后调用 finish 并把计划作为总结。"})
@@ -550,6 +567,24 @@ class AgentLoop:
                 result = dispatch(a.name, a.arguments, self.tool_ctx)
                 self._emit(ToolResultEvent(a.call_id, a.name, result["ok"], result["output"]))
                 self._append_tool_result(a, result, text_protocol)
+                if a.name == "run_command":
+                    # 失败命令守卫：同一命令反复失败（典型：反复跑自己写的辅助脚本），
+                    # 每次"修脚本"参数都不同，连续重复检测覆盖不到，需单独计数提示。
+                    # 注意 run_command 对非零退出码也返回 ok=True（命令执行了≠成功），
+                    # 失败要从输出头的"退出码 N"识别（异常时 ok=False 同样算失败）
+                    out = result.get("output") or ""
+                    m_rc = re.search(r"退出码 (\d+)", out[:40])
+                    failed = (not result.get("ok", True)) or bool(m_rc and int(m_rc.group(1)) != 0)
+                    if failed:
+                        cmd = (a.arguments.get("command") or "").strip()
+                        self._cmd_fail[cmd] = self._cmd_fail.get(cmd, 0) + 1
+                        if self._cmd_fail[cmd] >= 3 and cmd not in self._cmd_hinted:
+                            self._cmd_hinted.add(cmd)
+                            self.ctx.add({"role": "user", "content":
+                                f"（提示：同一条命令已失败 {self._cmd_fail[cmd]} 次。停止继续重试或修补它——"
+                                "改用 read_file 直接查看相关文件定位根因，或换其他工具/方案完成任务；"
+                                "若它是辅助脚本，可放弃并在 finish 总结中说明。）"})
+                            self._emit(ErrorEvent(f"命令已连续失败 {self._cmd_fail[cmd]} 次，已注入换方案提示"))
                 r = self._interrupted(step)
                 if r:
                     return r

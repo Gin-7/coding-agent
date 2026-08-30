@@ -2,7 +2,7 @@
 from .registry import register
 
 
-def tool_spawn_subagent(tool_ctx, prompt, max_steps=8, tools=None, allow_write=False):
+def tool_spawn_subagent(tool_ctx, prompt, max_steps=12, tools=None, allow_write=False):
     prompt = (prompt or "").strip()
     if not prompt:
         return "任务描述不能为空"
@@ -72,7 +72,7 @@ def register_subagent_tools() -> None:
                 "type": "object",
                 "properties": {
                     "prompt": {"type": "string", "description": "交给子 agent 的子任务描述（要做什么、关注什么）"},
-                    "max_steps": {"type": "integer", "description": "子 agent 最大步数（默认 8，上限 20）"},
+                    "max_steps": {"type": "integer", "description": "子 agent 最大步数（默认 12，上限 30）"},
                     "tools": {"type": "array", "items": {"type": "string"},
                               "description": "可选：允许子 agent 使用的工具名列表（默认只读；allow_write=true 时才可放开写/执行）"},
                     "allow_write": {"type": "boolean", "description": "是否允许子 agent 使用写/执行类工具（默认 false=只读安全；设为 true 才可写文件/执行命令）"},
