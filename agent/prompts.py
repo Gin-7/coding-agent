@@ -19,7 +19,10 @@ def make_system_prompt(workspace) -> str:
 - 一次工具调用完成一个完整步骤，避免碎片化操作
 - 修改已有文件的局部内容优先用 edit_file（精确替换），避免整体重写；不要一次性整体重写大文件
 - 单条工具调用的参数不要过大：需要改写或新建较大的文件时，请分段多次写入（如用 edit_file 逐段替换、或先写部分再用后续调用追加），避免单次参数超限导致工具调用解析失败
-- 长命令或复杂逻辑请先写成脚本文件，再执行脚本
+- 向已有文件追加内容：用 edit_file（old 取文件结尾的唯一锚点文本，new = 锚点 + 新增内容）分段追加；
+  禁止用 run_command 执行 python -c / echo 等命令行方式写文件内容——cmd 会对 && | < > ! 等特殊字符
+  做转义/解析，写出的内容会损坏且难以察觉；文件内容只能经由 write_file / edit_file 工具落盘
+- 长命令或复杂逻辑请先写成脚本文件，再执行脚本（脚本文件本身也用 write_file 创建，不要用命令行写）
 - 命令输出可能被截断（超 3000 字符），需要完整内容时用 read_file 读取文件
 - 长耗时命令（如 dev server、长构建、安装）用 start_background 后台执行，不阻塞其他工作；之后用 poll_background 查询、stop_background 停止
 - 需要并行探索/拆解大任务时：spawn_subagent 派单个、spawn_subagents 派多个（同步等待合并）；如需"先派出去、主 agent 继续干活、稍后收结果"用 start_subagents + wait_subagents + list_subagent_batches

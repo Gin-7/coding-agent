@@ -560,7 +560,9 @@ class AgentLoop:
                 self._emit(ErrorEvent("检测到连续重复的工具调用，已要求模型换方案"))
                 self.ctx.add({"role": "user", "content":
                     "（提示：你已连续多次用完全相同的参数调用同一组工具，这通常说明该做法走不通。"
-                    "请换一种方案（换命令、换路径、或先读取/搜索确认现状）；若任务已完成请调用 finish 结束。）"})
+                    "请换一种方案（换命令、换路径、或先读取/搜索确认现状）；若任务已完成请调用 finish 结束。"
+                    "特别地：若你在向文件写/追加内容，必须改用 write_file / edit_file 工具，"
+                    "禁止继续用命令行转义写文件——cmd 会破坏 && | < > 等特殊字符。）"})
 
         self._emit(ErrorEvent(f"达到最大步数 {self.max_steps}，任务中止"))
         return {"status": "timeout", "message": f"达到最大步数 {self.max_steps}",
