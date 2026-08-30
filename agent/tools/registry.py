@@ -2,6 +2,7 @@
 
 schema 直接作为 API 的 tools 参数 —— 工具即数据，新增工具 = 注册 + 实现，可扩展。
 """
+import inspect
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -43,5 +44,17 @@ def dispatch(name: str, args: dict, tool_ctx: ToolContext) -> dict:
         return {"ok": True, "output": str(output)}
     except ToolRejected as e:
         return {"ok": False, "output": str(e)}
+    except TypeError as e:
+        # 多半是模型传了 schema 之外的参数。原始的 "unexpected keyword argument 'x'"
+        # 对模型很难自我纠正，所以把该工具真正接受的参数名一并回给它。
+        msg = str(e)
+        hint = ""
+        if "keyword" in msg or "argument" in msg:
+            try:
+                params = [p for p in inspect.signature(t["fn"]).parameters if p != "tool_ctx"]
+                hint = f"。{name} 接受的参数：{params}（请检查是否多传或未传必填项）"
+            except (TypeError, ValueError):
+                hint = ""
+        return {"ok": False, "output": f"工具 {name} 参数不匹配：{msg}{hint}"}
     except Exception as e:  # noqa: BLE001 —— 有意兜底所有异常
         return {"ok": False, "output": f"{type(e).__name__}: {e}"}

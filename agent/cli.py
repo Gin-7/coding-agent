@@ -46,6 +46,7 @@ def _parse_args(argv):
 
 def _confirm_interactive(name: str, desc: str) -> bool:
     if name == "plan":
+        # 计划模式交出计划：批准后转入执行阶段（全量工具）
         print(f"\n[计划]\n{desc}\n")
         prompt = "批准执行该计划？[y/N] "
     else:
@@ -203,7 +204,9 @@ def main(argv=None) -> int:
             session.log(event_to_dict(ev))
 
         if args.mock:
-            loop = _build_mock(workspace, args.max_steps, args.budget, on_event, confirm)
+            # plan_mode 必须透传：否则 `--plan --mock`（演示计划模式）会静默退化成普通模式
+            loop = _build_mock(workspace, args.max_steps, args.budget, on_event, confirm,
+                               plan_mode=args.plan)
         else:
             loop = _build_real(workspace, args, on_event, confirm)
 

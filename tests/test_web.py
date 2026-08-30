@@ -110,7 +110,9 @@ def test_web_server_endpoints(tmp):
             {"permission": "plan"}).encode("utf-8"), headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=10) as r:
             _json.loads(r.read())
-        assert web.loop.plan_mode is True and web.loop.confirm is None
+        # 计划模式也要挂 confirm：计划交出后靠它弹窗征求批准，批准后 loop 才关闭
+        # plan_mode 转入执行阶段（旧行为是 confirm=None，批准后执行无法实现）
+        assert web.loop.plan_mode is True and web.loop.confirm is not None
         req = urllib.request.Request(base + "/api/settings", data=_json.dumps(
             {"permission": "auto"}).encode("utf-8"), headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(req, timeout=10) as r:

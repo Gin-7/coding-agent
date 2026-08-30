@@ -23,6 +23,31 @@ def test_file_roundtrip(tmp):
     assert r["ok"] and "L48" in r["output"] and "L38" not in r["output"]
 
 
+def test_read_file_char_cap(tmp):
+    """回归：read_file 必须有字符上限。
+
+    只限行数不够——压缩过的 JS / 生成的 SQL 几千行就上 MB，实测单次可回传
+    100 万字符（≈33 万 token），顶穿模型窗口被 API 400 打回；而这恰好是"最后一条
+    工具结果"，三层降级策略（压缩/裁剪都保护最近轮次）也救不回来。
+    """
+    from agent.tools import ToolContext, dispatch, register_all
+    from agent.tools.file_tools import MAX_READ_CHARS
+    register_all()
+    ws = make_ws(tmp, "readcap")
+    ctx = ToolContext(ws)
+    (ws / "big.js").write_text("\n".join("var x%d = \"%s\";" % (i, "a" * 480) for i in range(2000)),
+                               encoding="utf-8")
+    r = dispatch("read_file", {"path": "big.js"}, ctx)
+    assert r["ok"]
+    # 留一点余量给头部说明与截断提示
+    assert len(r["output"]) < MAX_READ_CHARS * 1.1, f"未被截断：{len(r['output'])} 字符"
+    assert "内容已截断" in r["output"]
+    # 小文件不受影响
+    (ws / "small.py").write_text("print(1)\n" * 5, encoding="utf-8")
+    r2 = dispatch("read_file", {"path": "small.py"}, ctx)
+    assert r2["ok"] and "截断" not in r2["output"] and "print(1)" in r2["output"]
+
+
 def test_path_escape_blocked(tmp):
     from agent.tools import ToolContext, dispatch, register_all
     register_all()

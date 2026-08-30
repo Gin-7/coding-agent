@@ -42,7 +42,7 @@ python -m agent                  # 交互式 REPL，多轮对话
     - 后台任务：命令、状态徽章、实时输出、停止按钮
     - 子 agent：对话式详情（prompt + 工具调用 + 输出，与主 agent 一致）
   - 当前选中的文件 / 任务项会高亮
-- **权限模式**（输入区下拉）：`自动编辑` / `变更前确认` / `计划模式`（先只读探索、批准后执行）
+- **权限模式**（输入区下拉）：`自动编辑` / `变更前确认` / `计划模式`（先只读探索 → 交出计划 → **批准后执行**）
 - **设置弹窗**：明暗主题、模型、工具列表、关于；主题与布局服务端持久化（`.agent-settings.json`），重启 / 换浏览器不丢
 
 ## 命令行模式（REPL）
@@ -51,7 +51,7 @@ python -m agent                  # 交互式 REPL，多轮对话
 python -m agent --resume "继续上一个任务：..."        # 从最近会话恢复
 python -m agent --resume-file sessions/session-xxx.jsonl "..."   # 指定会话恢复
 python -m agent --permission ask "任务"               # 审批模式：命令 / 提交需确认
-python -m agent --plan "任务"                         # 规划模式：先计划（只读探索）批准后执行
+python -m agent --plan "任务"                         # 规划模式：只读探索 → 输出计划 → 终端确认批准后执行
 python -m agent --version / --tools                  # 版本 / 列工具
 ```
 

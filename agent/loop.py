@@ -74,6 +74,12 @@ class AgentLoop:
         self._sub_batches = {}   # 后台子 agent 批次：batch_id -> {threads, results, tasks}
         self._batch_counter = 0
         self._sub_progress = {}  # 子 agent 运行态：subagent_id -> {batch_id,name,prompt,status,summary,events:[]}
+        # 并行子 agent 线程会写 _sub_progress，而 list_subagents() 在 HTTP 线程遍历它，
+        # 不加锁会撞上 "dictionary changed size during iteration"
+        self._sub_lock = threading.Lock()
+        self._finish_hinted = False  # 防空转提示只注入一次（见 _maybe_hint_finish）
+        self._last_action_sig = None  # 上一轮工具调用签名（重复调用检测用）
+        self._repeat_streak = 0
 
     def _bg_emit(self, ev: dict):
         t = ev.get("type")
@@ -109,10 +115,11 @@ class AgentLoop:
             allowed = set(READONLY_TOOLS)             # 硬只读
             if tools:
                 allowed = allowed & set(tools)        # tools 只能再收窄
-        # 注册运行态 + 广播启动
-        self._sub_progress[sub_id] = {"batch_id": batch_id, "name": prompt[:40],
-                                      "prompt": prompt, "status": "running",
-                                      "summary": "", "events": []}
+        # 注册运行态 + 广播启动（加锁：并行子 agent 线程写、HTTP 线程读同一字典）
+        with self._sub_lock:
+            self._sub_progress[sub_id] = {"batch_id": batch_id, "name": prompt[:40],
+                                          "prompt": prompt, "status": "running",
+                                          "summary": "", "events": []}
         self._emit(SubagentStarted(sub_id, batch_id, prompt[:40], prompt))
         from .prompts import make_system_prompt
         sub_tool_ctx = ToolContext(self.tool_ctx.workspace)
@@ -131,8 +138,9 @@ class AgentLoop:
         status = result.get("status")
         summary = result.get("summary") or result.get("message") or self._last_subagent_output(sub_ctx)
         summary = (summary or "")[:2000]
-        self._sub_progress[sub_id]["status"] = status
-        self._sub_progress[sub_id]["summary"] = summary
+        with self._sub_lock:
+            self._sub_progress[sub_id]["status"] = status
+            self._sub_progress[sub_id]["summary"] = summary
         self._emit(SubagentStatus(sub_id, batch_id, status, summary))
         return status, summary
 
@@ -140,9 +148,10 @@ class AgentLoop:
         """包装子 agent 的逐事件：存入进度日志 + 上浮为 SubagentEvent。"""
         def cb(ev):
             d = ev if isinstance(ev, dict) else event_to_dict(ev)
-            entry = self._sub_progress.get(sub_id)
-            if entry is not None and entry["status"] == "running":
-                entry["events"].append(d)
+            with self._sub_lock:
+                entry = self._sub_progress.get(sub_id)
+                if entry is not None and entry["status"] == "running":
+                    entry["events"].append(d)
             self._emit(SubagentEvent(sub_id, batch_id, d))
         return cb
 
@@ -239,12 +248,18 @@ class AgentLoop:
         return "\n".join(lines)
 
     def list_subagents(self) -> list:
-        """Web UI 用的子 agent 运行态快照（含逐事件明细，供详情面板回放对话）。"""
+        """Web UI 用的子 agent 运行态快照（含逐事件明细，供详情面板回放对话）。
+
+        先加锁取快照再遍历：并行子 agent 线程会往字典里插入新条目，直接遍历
+        .items() 会撞 RuntimeError: dictionary changed size during iteration。
+        """
+        with self._sub_lock:
+            items = list(self._sub_progress.items())
         return [
             {"subagent_id": sid, "batch_id": e["batch_id"], "name": e["name"],
              "prompt": e["prompt"], "status": e["status"], "summary": e["summary"],
              "events": e["events"]}
-            for sid, e in self._sub_progress.items()
+            for sid, e in items
         ]
 
     def _last_subagent_output(self, ctx: Context) -> str:
@@ -259,7 +274,7 @@ class AgentLoop:
         if self.interrupt_event is not None and self.interrupt_event.is_set():
             self._emit(ErrorEvent("执行被用户中断"))
             return {"status": "interrupted", "message": "用户中断",
-                    "steps": step, "usage": dict(self.ctx.real_usage)}
+                    "steps": step, "usage": dict(self.ctx.round_usage)}
         return None
 
     def _emit(self, ev) -> None:
@@ -295,12 +310,15 @@ class AgentLoop:
             self._emit(CompactedEvent(removed, summarized=False))
 
     def _maybe_hint_finish(self, step: int) -> None:
-        """防空转：过半仍未 finish 时注入提示（不重复注入）。"""
-        if step <= self.max_steps // 2:
+        """防空转：过半仍未 finish 时注入提示（每次 run 只注入一次）。
+
+        判据用实例标记而非"看最后一条消息"：后者在模型继续调用工具后就失效了
+        （末尾变成 tool 消息），会导致过半之后**每一步**都重复注入同一句提示，
+        既刷屏又白烧 token。
+        """
+        if step <= self.max_steps // 2 or self._finish_hinted:
             return
-        last = self.ctx.messages[-1] if self.ctx.messages else None
-        if last and last.get("role") == "user" and "finish" in (last.get("content") or ""):
-            return
+        self._finish_hinted = True
         self.ctx.add({"role": "user", "content": "（提示：若任务已完成，请调用 finish 工具结束任务，不要做多余操作。）"})
 
     def _append_tool_result(self, call, result: dict, text_protocol: bool) -> None:
@@ -334,12 +352,18 @@ class AgentLoop:
         return False
 
     def run(self, task: str) -> dict:
+        # 新的一轮：本轮用量清零（REPL/Web 复用同一个 ctx，会话累计值 real_usage 不动），
+        # 这样 RunResult 报的是"这一轮花了多少"，而不是跨轮累加的总账。
+        self.ctx.reset_round_usage()
         self.ctx.add({"role": "user", "content": task})
         if self.plan_mode:
             self.ctx.add({"role": "user",
                           "content": "【计划模式】请用只读工具探索现状，制定一份可执行的计划；本模式只做计划、不执行任何修改，完成后调用 finish 并把计划作为总结。"})
         text_only_streak = 0
         parse_fail_streak = 0  # 连续工具调用解析失败计数（C：防止模型反复生成超大/非法工具调用死循环）
+        self._finish_hinted = False  # 多轮 REPL / Web 复用同一 loop，提示按轮重置
+        self._last_action_sig = None
+        self._repeat_streak = 0
 
         for step in range(1, self.max_steps + 1):
             r = self._interrupted(step)
@@ -353,6 +377,7 @@ class AgentLoop:
             # 1. 调 LLM（流式）；按 allowed_tools / 规划阶段过滤暴露的工具
             content_parts, tool_calls_raw = [], []
             schemas = self._schemas()
+            stop_streaming = False
             try:
                 for ev in self.llm.chat_stream(self.ctx.messages, tools=schemas):
                     if ev["type"] == "text":
@@ -362,9 +387,19 @@ class AgentLoop:
                         tool_calls_raw = ev.get("tool_calls") or []
                         if ev.get("usage"):
                             self.ctx.record_usage(ev["usage"])
+                    # 流式过程中也检查中断：长回复时用户不必干等到这一步跑完才停。
+                    # 此时本轮的 assistant 消息还没写回历史，直接返回即可，历史保持一致。
+                    if self.interrupt_event is not None and self.interrupt_event.is_set():
+                        stop_streaming = True
+                        break
             except LLMError as e:
                 self._emit(ErrorEvent(str(e)))
-                return {"status": "error", "message": str(e)}
+                return {"status": "error", "message": str(e),
+                        "steps": step, "usage": dict(self.ctx.round_usage)}
+            if stop_streaming:
+                self._emit(ErrorEvent("执行被用户中断"))
+                return {"status": "interrupted", "message": "用户中断",
+                        "steps": step, "usage": dict(self.ctx.round_usage)}
 
             content = "".join(content_parts)
 
@@ -385,10 +420,13 @@ class AgentLoop:
                             f"（很可能试图一次性整体重写大文件）。请改用 edit_file 做小段精确替换，"
                             f"或分段多次写入；单次工具调用的参数不要过大。若仍无法生成合法调用，请调用 finish 结束任务。"})
                         self._emit(ErrorEvent("模型连续多次工具调用解析失败，任务中止"))
-                        return {"status": "stopped", "message": "模型工具调用持续解析失败"}
+                        return {"status": "stopped", "message": "模型工具调用持续解析失败",
+                                "steps": step, "usage": dict(self.ctx.round_usage)}
                     self.ctx.add({"role": "user", "content":
                         f"工具调用解析失败：{e}。请改用 edit_file 做小段精确替换（不要整体重写大文件），"
                         f"单次工具调用的参数不要过大，并以合法 JSON 重新调用工具。"})
+                    # 上屏：否则用户只看到 agent 卡住，不知道是模型输出非法、正在让它重试
+                    self._emit(ErrorEvent(f"工具调用解析失败：{e}；已要求模型以合法 JSON 重试"))
                     continue
             else:
                 parse_fail_streak = 0  # 文本路径（无原生工具调用）→ 非解析失败，重置计数
@@ -416,12 +454,23 @@ class AgentLoop:
                 text_only_streak += 1
                 if text_only_streak >= 2:
                     self._emit(ErrorEvent("模型连续两轮未调用工具，任务中止"))
-                    return {"status": "stopped", "message": "模型未继续行动"}
+                    return {"status": "stopped", "message": "模型未继续行动",
+                            "steps": step, "usage": dict(self.ctx.round_usage)}
                 self.ctx.add({"role": "user", "content": "请继续：要么调用工具完成剩余步骤，要么调用 finish 结束任务。"})
                 continue
 
             text_only_streak = 0
             parse_fail_streak = 0  # 成功产出工具调用/文本协议调用，解析失败计数归零
+
+            # 4.5 重复调用检测：现有防空转只覆盖"完全不调工具"和"解析失败"，
+            #     但"同一工具+同样参数反复失败"这种最常见的死循环没人管，只能刷到 max_steps。
+            sig = tuple((a.name, json.dumps(a.arguments, sort_keys=True, ensure_ascii=False))
+                        for a in actions)
+            if sig == self._last_action_sig:
+                self._repeat_streak += 1
+            else:
+                self._repeat_streak = 0
+            self._last_action_sig = sig
 
             # 5. 分派执行。注意：finish 也按普通工具执行并回写结果——
             #    若直接 return，历史中会留下无 tool 结果配对的 assistant tool_calls，
@@ -429,13 +478,41 @@ class AgentLoop:
             for a in actions:
                 self._emit(ToolCallEvent(a.call_id, a.name, a.arguments))
                 if a.name == "finish":
+                    summary = a.arguments.get("summary", "任务完成")
+                    if self._plan_pending():
+                        # 计划模式：finish = 交出计划，等用户批准。
+                        # 无 confirm 回调时（程序化调用 / 无 UI）退化为"只出计划"，行为同前。
+                        approved = bool(self.confirm("plan", summary)) if self.confirm else False
+                        if not approved:
+                            result = {"ok": True, "output": "计划已提交（用户未批准执行）"}
+                            self._emit(ToolResultEvent(a.call_id, a.name, True, result["output"]))
+                            self._append_tool_result(a, result, text_protocol)
+                            self._emit(FinishEvent(summary))
+                            return {"status": "finished", "summary": summary,
+                                    "steps": step, "usage": dict(self.ctx.round_usage)}
+                        # 批准 → 关掉计划模式，下一轮起全量工具放开，按批准的计划执行
+                        self.plan_mode = False
+                        self._finish_hinted = False  # 执行阶段重新给一次 finish 提示的机会
+                        result = {"ok": True, "output": "计划已批准，开始执行"}
+                        self._emit(ToolResultEvent(a.call_id, a.name, True, result["output"]))
+                        self._append_tool_result(a, result, text_protocol)
+                        self.ctx.add({"role": "user", "content":
+                            "【计划已批准】请严格按上面批准的计划执行；现在可以使用全部工具（含写入与命令执行）。"})
+                        break
                     result = {"ok": True, "output": "任务完成"}
                     self._emit(ToolResultEvent(a.call_id, a.name, True, result["output"]))
                     self._append_tool_result(a, result, text_protocol)
-                    summary = a.arguments.get("summary", "任务完成")
                     self._emit(FinishEvent(summary))
                     return {"status": "finished", "summary": summary,
-                            "steps": step, "usage": dict(self.ctx.real_usage)}
+                            "steps": step, "usage": dict(self.ctx.round_usage)}
+                # 计划模式必须先判：它禁止一切写/执行。若排在审批之后，会先弹一次
+                # "允许执行 run_command？" 让用户白批准一次，然后才被计划模式拒掉。
+                if self._plan_pending() and a.name not in PLAN_TOOLS:
+                    result = {"ok": False,
+                              "output": "计划模式仅允许只读工具（read_file/list_dir/search/glob/git_status/git_diff），只做计划、不执行修改"}
+                    self._emit(ToolResultEvent(a.call_id, a.name, False, result["output"]))
+                    self._append_tool_result(a, result, text_protocol)
+                    continue
                 if self.confirm and self._needs_confirm(a.name, a.arguments):
                     desc = json.dumps(a.arguments, ensure_ascii=False)
                     if not self.confirm(a.name, desc):
@@ -443,15 +520,8 @@ class AgentLoop:
                         self._emit(ToolResultEvent(a.call_id, a.name, False, result["output"]))
                         self._append_tool_result(a, result, text_protocol)
                         continue
-                if self._plan_pending() and a.name not in PLAN_TOOLS:
-                    # 计划模式拒绝一切写/执行类操作（只做计划，不执行）
-                    result = {"ok": False,
-                              "output": "计划模式仅允许只读工具（read_file/list_dir/search/glob/git_status/git_diff），只做计划、不执行修改"}
-                    self._emit(ToolResultEvent(a.call_id, a.name, False, result["output"]))
-                    self._append_tool_result(a, result, text_protocol)
-                    continue
                 # 破坏性删除命令：auto 模式无人可批准 → 拒绝并提示切批准模式；
-                # ask 模式（self.confirm 已设置）落到下方 confirm 网关由用户决定；plan 模式已在上方拦截
+                # ask 模式的 run_command 已在上方 confirm 网关经用户确认；plan 模式更早已被拦截
                 if a.name == "run_command" and is_destructive(a.arguments.get("command", "")) \
                         and self.confirm is None:
                     result = {"ok": False,
@@ -472,5 +542,14 @@ class AgentLoop:
                 if r:
                     return r
 
+            # 连续两轮完全相同的调用 → 多半在死循环重试，主动纠偏（不终止，给模型改过的机会）
+            if self._repeat_streak >= 2:
+                self._repeat_streak = 0  # 提示一次后重新计数，避免刷屏
+                self._emit(ErrorEvent("检测到连续重复的工具调用，已要求模型换方案"))
+                self.ctx.add({"role": "user", "content":
+                    "（提示：你已连续多次用完全相同的参数调用同一组工具，这通常说明该做法走不通。"
+                    "请换一种方案（换命令、换路径、或先读取/搜索确认现状）；若任务已完成请调用 finish 结束。）"})
+
         self._emit(ErrorEvent(f"达到最大步数 {self.max_steps}，任务中止"))
-        return {"status": "timeout", "message": f"达到最大步数 {self.max_steps}", "steps": self.max_steps}
+        return {"status": "timeout", "message": f"达到最大步数 {self.max_steps}",
+                "steps": self.max_steps, "usage": dict(self.ctx.round_usage)}

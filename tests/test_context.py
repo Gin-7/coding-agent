@@ -46,6 +46,48 @@ def test_trim_to_budget_returns_count(tmp):
     assert ctx.estimated_tokens() <= 100 or removed >= 2
 
 
+def test_estimate_reflects_new_big_tool_result(tmp):
+    """回归：追加超大工具结果后估算必须立刻上涨。
+
+    旧实现直接把 API 回传的 last_prompt_tokens 当估算值返回，导致"追加内容"完全
+    不反映在估算里——读完大文件后 needs_trim() 仍是 False，直到下一次 API 调用
+    才被 400 打回。现改为"基线开销 + 当前消息启发式"，消息一变估算立刻变。
+    """
+    from agent.context import Context
+    ctx = Context("sys", 30_000)
+    ctx.add({"role": "user", "content": "task"})
+    ctx.record_usage({"prompt_tokens": 6_400})
+    assert not ctx.needs_trim()
+    before = ctx.estimated_tokens()
+    ctx.add({"role": "assistant", "content": "", "tool_calls": [
+        {"id": "c1", "type": "function", "function": {"name": "x", "arguments": "{}"}}]})
+    ctx.add({"role": "tool", "tool_call_id": "c1", "content": "z" * 300_000})
+    assert ctx.estimated_tokens() > before * 5
+    assert ctx.needs_trim()
+
+
+def test_trim_stops_when_under_budget(tmp):
+    """回归：trim_to_budget 应"够用即止"，而不是把所有可裁剪轮次一次清空。
+
+    旧实现里 trim_old_tool_rounds() 一次扫描就裁光全部可裁剪轮次，外层
+    "裁到低于预算为止"的循环形同虚设 → 历史被无谓清空并级联触发硬截断。
+    """
+    from agent.context import Context
+    ctx = Context("sys", 30_000)
+    ctx.add({"role": "user", "content": "task"})
+    ctx.record_usage({"prompt_tokens": 6_400})
+    for r in range(20):
+        ctx.add({"role": "assistant", "content": "", "tool_calls": [
+            {"id": f"c{r}", "type": "function", "function": {"name": "x", "arguments": "{}"}}]})
+        ctx.add({"role": "tool", "tool_call_id": f"c{r}", "content": "y" * 5000})
+    assert ctx.needs_trim()
+    removed = ctx.trim_to_budget()
+    # 20 轮里只需裁掉约 6 轮即可回到预算内；远不该裁到只剩最后一轮
+    assert 1 <= removed <= 10, f"只应裁必要轮次，实际裁了 {removed} 轮"
+    assert not ctx.needs_trim()
+    assert len(ctx.messages) > 20, f"历史被过度裁剪，只剩 {len(ctx.messages)} 条"
+
+
 def test_hard_truncate(tmp):
     from agent.context import Context
     ctx = Context("sys", 1_000_000)

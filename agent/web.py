@@ -347,12 +347,13 @@ class WebAgentServer:
     def _apply_permission_plan(self) -> None:
         """把当前 permission（auto/ask/plan）应用到运行中的 loop（运行时切换授权/计划模式）。
 
-        plan = 只读 + 做计划（无批准→执行），因此不触发 confirm（无需逐次确认）。
+        plan 模式下 confirm 也要挂上：计划交出来之后要靠它弹窗征求批准，
+        批准后 loop 才关掉 plan_mode 转入执行阶段。
         """
         if self.loop is None:
             return
         permission = self.settings.get("permission", "auto")
-        self.loop.confirm = self.confirm if (permission == "ask") else None
+        self.loop.confirm = self.confirm if permission in ("ask", "plan") else None
         self.loop.plan_mode = permission == "plan"
 
     def list_workspaces(self) -> list:
@@ -644,7 +645,9 @@ class WebAgentServer:
             result = self.loop.run(task)
         except Exception as e:  # noqa: BLE001
             result = {"status": "error", "message": f"{type(e).__name__}: {e}"}
-        self.hub.broadcast({"type": "RunResult", **result, "usage": dict(self.loop.ctx.real_usage)})
+        # usage 直接用 result 里的（run() 已上报"本轮"用量）。这里**不要**再拿
+        # ctx.real_usage 覆盖——那是会话累计值，多轮下会一路累加，看起来像单轮破百万。
+        self.hub.broadcast({"type": "RunResult", **result})
         self._persist_active(result)
 
     def _persist_active(self, result: dict):
@@ -654,7 +657,9 @@ class WebAgentServer:
         rec.writer.log({"type": "RunResult", "status": result.get("status"),
                         "message": result.get("message") or result.get("summary"),
                         "steps": result.get("steps"),
-                        "usage": dict(self.loop.ctx.real_usage)})
+                        # 落盘"本轮"用量（result 里已带）；会话累计值 real_usage 不入库，
+                        # 免得回放时把跨轮总账误读成单轮消耗
+                        "usage": result.get("usage") or dict(self.loop.ctx.round_usage)})
         rec.writer.log({"type": "MessagesDump", "messages": self.loop.ctx.messages})
         rec.messages = list(self.loop.ctx.messages)
         rec.mtime = time.time()
@@ -1081,7 +1086,8 @@ def _build_loop(workspace: Path, args, on_event, hub, web):
     if not permission:
         permission = "plan" if args.plan else ("ask" if args.permission == "ask" else "auto")
     plan = permission == "plan"
-    confirm = web.confirm if permission == "ask" else None  # plan 只读+做计划，不逐次确认
+    # plan 模式也要挂 confirm：计划交出后靠它弹窗征求批准，批准后才转入执行阶段
+    confirm = web.confirm if permission in ("ask", "plan") else None
     ctx = Context(make_system_prompt(workspace), budget, budget_resolver=budget_resolver,
                   window_resolver=window_resolver)
     return AgentLoop(llm, ctx, ToolContext(workspace), max_steps=args.max_steps or 30,

@@ -10,6 +10,11 @@ from .paths import ensure_safe_file, resolve_workspace_path
 from .registry import register
 
 MAX_READ_LINES = 2000
+# 单次读取的字符上限。只限行数是不够的：压缩过的 JS / 生成的 SQL / 大日志经常
+# 几千行就上 MB，实测一次 read_file 可回传 100 万字符（≈33 万 token），
+# 直接顶穿模型窗口被 API 以 400 打回，且这个"最后一条工具结果"恰好是三层降级
+# 策略裁不掉的部分（裁剪/压缩都保护最近轮次）。所以必须在源头截断。
+MAX_READ_CHARS = 30000
 BACKUP_ROOT = ".agent-backups"
 
 
@@ -69,7 +74,13 @@ def tool_read_file(tool_ctx, path: str, offset: int = 1, limit: int = MAX_READ_L
     sel = lines[offset - 1:end]
     width = len(str(len(lines)))
     body = "\n".join(f"{i:>{width}} | {ln}" for i, ln in enumerate(sel, start=offset))
-    return f"文件 {path}：共 {len(lines)} 行，显示第 {offset}-{end} 行\n{body}"
+    head = f"文件 {path}：共 {len(lines)} 行，显示第 {offset}-{end} 行"
+    if len(body) > MAX_READ_CHARS:
+        body = body[:MAX_READ_CHARS] + (
+            f"\n…（内容已截断：本次读取超过 {MAX_READ_CHARS} 字符。"
+            f"请用 offset/limit 分段读取，或先用 search 定位到目标行附近）"
+        )
+    return head + "\n" + body
 
 
 def tool_write_file(tool_ctx, path: str, content: str) -> str:
@@ -141,7 +152,7 @@ def register_file_tools() -> None:
             "type": "function",
             "function": {
                 "name": "read_file",
-                "description": "读取文件内容（带行号），支持 offset/limit 分页。路径相对工作区根目录，不允许越界。",
+                "description": f"读取文件内容（带行号），支持 offset/limit 分页。路径相对工作区根目录，不允许越界。单次最多返回约 {MAX_READ_CHARS} 字符，超出会截断——大文件请用 offset/limit 分段读，或先用 search 定位。",
                 "parameters": {
                     "type": "object",
                     "properties": {

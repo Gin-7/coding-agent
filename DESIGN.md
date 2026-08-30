@@ -271,7 +271,7 @@ python -m agent "任务描述"               # 一次性模式（演示/自动�
 | D5 | 测试（parser / context / tools）+ 使用文档 + 演示准备 | 全流程稳定可用，演示素材齐备 |
 | D6 | 缓冲：真实任务演练、修 bug、文档打磨 | 全流程彩排 |
 | 增强 | git 工具集、glob、会话恢复 --resume、审批模式 --permission ask、命令实时输出、usage 统计与 REPL 斜杠命令、参数类型校验 | ✅ 完成：29 项测试全绿，真实 API 验证 git/glob/恢复/流式输出 |
-| 增强2 | undo 编辑备份、规划模式 --plan（计划轮仅只读工具，批准后执行）、工作区记忆 .agent-memory.md | ✅ 完成：32 项测试全绿，真实 API 验证 undo/plan/记忆注入 |
+| 增强2 | undo 编辑备份、规划模式 --plan（计划轮仅只读工具，批准后执行）、工作区记忆 .agent-memory.md | ✅ 完成：32 项测试全绿，真实 API 验证 undo/plan/记忆注入；批准→执行链路见 `loop.py` finish 分支 |
 | 增强3 | Web UI（SSE 事件流 + 浏览器渲染器）、Web 端审批与中断 | ✅ 完成：33 项测试全绿，冒烟验证页面/接口/运行链路 |
 
 ---
