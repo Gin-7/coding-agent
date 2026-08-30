@@ -13,7 +13,7 @@ DEFAULTS = {
     "AGENT_MODEL": "deepseek-chat",
     "AGENT_BASE_URL": "https://api.deepseek.com",
     "AGENT_TEMPERATURE": "0.0",
-    "AGENT_MAX_TOKENS": "4096",
+    "AGENT_MAX_TOKENS": "8192",
     "AGENT_MAX_CONTEXT_TOKENS": "0",
     "AGENT_MAX_STEPS": "50",
     "AGENT_TIMEOUT": "120",

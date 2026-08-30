@@ -28,6 +28,29 @@ def test_parse_tool_calls_unknown(tmp):
         pass
 
 
+def test_parse_truncation_flag(tmp):
+    """截断识别：错误位置在参数串末尾 → truncated=True（生成上限截断）；
+    中段损坏（如裸换行导致提前结束）→ truncated=False。附带原始参数供纠偏提示引用。"""
+    from agent.parser import ParseError, parse_tool_calls
+    from agent.tools import register_all, TOOLS
+    register_all()
+    # 末尾截断：字符串中途整体结束
+    try:
+        parse_tool_calls([{"id": "c1", "name": "write_file",
+                           "arguments": '{"path": "a.txt", "content": "hel'}], TOOLS)
+        raise AssertionError("应抛出 ParseError")
+    except ParseError as e:
+        assert getattr(e, "truncated") is True
+        assert "hel" in getattr(e, "raw_args")
+    # 中段损坏：content 值里有裸换行 → 字符串在换行处报错，但后面还有内容
+    raw = '{"path": "a.txt", "content": "第一行\n第二行", "x": 1}'
+    try:
+        parse_tool_calls([{"id": "c2", "name": "write_file", "arguments": raw}], TOOLS)
+        raise AssertionError("应抛出 ParseError")
+    except ParseError as e:
+        assert getattr(e, "truncated") is False
+
+
 def test_parse_tool_calls_missing_required(tmp):
     from agent.parser import ParseError, parse_tool_calls
     from agent.tools import register_all, TOOLS

@@ -32,6 +32,43 @@ def test_mock_loop_end_to_end(tmp):
     assert logs and logs[0].stat().st_size > 0
 
 
+def test_truncated_call_recovery(tmp):
+    """参数被生成上限截断：给出带残骸结尾的针对性提示，模型改小粒度后任务继续而非熔断。"""
+    import json
+    from agent.context import Context
+    from agent.loop import AgentLoop
+    from agent.prompts import make_system_prompt
+    from agent.tools import ToolContext, register_all
+    register_all()
+
+    class TruncThenOkLLM:
+        """第 1 次：截断的 write_file；看到'截断'提示后写小文件；再 finish。"""
+        def __init__(self):
+            self.n = 0
+
+        def chat_stream(self, messages, tools=None):
+            self.n += 1
+            last = (messages[-1].get("content") or "")
+            if self.n == 1:
+                truncated = '{"path": "a.txt", "content": "hel'
+                yield {"type": "done", "content": "", "finish_reason": "tool_calls", "usage": None,
+                       "tool_calls": [{"id": "t1", "name": "write_file", "arguments": truncated}]}
+            elif "截断" in last:
+                yield {"type": "done", "content": "", "finish_reason": "tool_calls", "usage": None,
+                       "tool_calls": [{"id": "t2", "name": "write_file",
+                                       "arguments": json.dumps({"path": "a.txt", "content": "hello"})}]}
+            else:
+                yield {"type": "done", "content": "", "finish_reason": "tool_calls", "usage": None,
+                       "tool_calls": [{"id": "t3", "name": "finish", "arguments": '{"summary": "ok"}'}]}
+
+    ws = make_ws(tmp, "trunc")
+    loop = AgentLoop(TruncThenOkLLM(), Context(make_system_prompt(str(ws)), 56000),
+                     ToolContext(ws), max_steps=10, on_event=None)
+    assert loop.run("写文件")["status"] == "finished"
+    assert (ws / "a.txt").read_text(encoding="utf-8") == "hello"
+    assert any("截断" in (m.get("content") or "") for m in loop.ctx.messages if m["role"] == "user")
+
+
 def test_finish_preserves_pairing(tmp):
     """历史中所有 assistant tool_calls 都须有对应 tool 结果（否则下一轮被 API 拒）。"""
     from agent.context import Context

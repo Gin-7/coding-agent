@@ -411,6 +411,18 @@ class AgentLoop:
                     actions = parse_tool_calls(tool_calls_raw, TOOLS)
                 except ParseError as e:
                     parse_fail_streak += 1
+                    if getattr(e, "truncated", False):
+                        # 参数在生成上限处被截断：模型需要知道"残骸长什么样"和明确的拆分策略，
+                        # 否则会原样重试同样的大调用，直到触发熔断（实测 qwen 商城生成两步即中止）
+                        tail = (getattr(e, "raw_args", "") or "")[-160:].replace("\n", "\\n")
+                        self.ctx.add({"role": "user", "content":
+                            f"工具调用解析失败：参数在单次生成上限处被截断（{e}）。\n"
+                            f"被截断参数的结尾：…{tail}\n"
+                            "这不是 JSON 格式问题，而是单次工具调用的内容太长。请拆分："
+                            "本次先 write_file 只写文件骨架（如 HTML 结构与 CSS，控制在 150 行内），"
+                            "其余内容用 edit_file 以小段替换逐次追加，单次追加不超过 100 行。"})
+                        self._emit(ErrorEvent(f"工具调用参数超限被截断；已要求拆分为骨架+分段追加重试"))
+                        continue
                     if parse_fail_streak >= 2:
                         # 连续两次工具调用解析失败：模型大概率在尝试把整个大文件塞进单个
                         # 工具调用参数（被 max_tokens 截断 / JSON 非法）。主动纠正并终止，

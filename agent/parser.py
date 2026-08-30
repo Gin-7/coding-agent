@@ -16,6 +16,12 @@ from .events import ToolCall
 
 TEXT_TOOL_PATTERN = re.compile(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", re.S)
 
+# 这些 JSON 错误消息意味着参数串在末尾被"齐刷刷"切断（单次生成上限截断的典型形态）；
+# 注意 "Invalid control character"（参数里有裸换行）是格式问题，不算截断
+_TRUNCATION_MSGS = {"Unterminated string starting at", "Expecting value", "Unexpected end of input",
+                    "Expecting ':' delimiter", "Expecting ',' delimiter",
+                    "Expecting property name enclosed in double quotes"}
+
 
 class ParseError(Exception):
     """输出解析失败（会回喂给模型让其修正）。"""
@@ -51,7 +57,11 @@ def _validate(name: str, args: dict, registry: dict) -> None:
 
 
 def parse_tool_calls(raw_tool_calls: list, registry: dict) -> List[ToolCall]:
-    """原生路径：校验并转换为内部 Action。"""
+    """原生路径：校验并转换为内部 Action。
+
+    截断识别：按 JSON 错误消息类型判断参数是否被单次生成上限"齐刷刷"切断，
+    ParseError 附带 raw_args 与 truncated 标记，供主循环给出针对性纠偏提示。
+    """
     result: List[ToolCall] = []
     for tc in raw_tool_calls or []:
         name = (tc.get("name") or "").strip()
@@ -59,7 +69,10 @@ def parse_tool_calls(raw_tool_calls: list, registry: dict) -> List[ToolCall]:
         try:
             args = json.loads(raw_args)
         except json.JSONDecodeError as e:
-            raise ParseError(f"工具 {name} 的参数 JSON 解析失败: {e}") from e
+            pe = ParseError(f"工具 {name} 的参数 JSON 解析失败: {e}")
+            pe.raw_args = raw_args or ""
+            pe.truncated = e.msg in _TRUNCATION_MSGS
+            raise pe from e
         _validate(name, args, registry)
         result.append(ToolCall(call_id=tc.get("id") or f"call_{len(result)}", name=name, arguments=args))
     return result
