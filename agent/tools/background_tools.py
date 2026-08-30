@@ -1,7 +1,7 @@
 """后台任务工具：start_background / poll_background / stop_background / list_background。"""
 from .paths import resolve_workspace_path
 from .registry import ToolRejected, register
-from .shell_tools import _check_blacklist
+from .shell_tools import CATASTROPHIC, _check_blacklist
 
 
 def _mgr(tool_ctx, name):

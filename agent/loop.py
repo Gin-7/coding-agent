@@ -118,7 +118,8 @@ class AgentLoop:
         sub_tool_ctx = ToolContext(self.tool_ctx.workspace)
         sub_tool_ctx.background = self.tool_ctx.background  # 共享后台管理
         sub_ctx = Context(make_system_prompt(self.tool_ctx.workspace), self.ctx.budget,
-                          budget_resolver=getattr(self.ctx, "budget_resolver", None))
+                          budget_resolver=getattr(self.ctx, "budget_resolver", None),
+                          window_resolver=getattr(self.ctx, "window_resolver", None))
         sub_loop = AgentLoop(self.llm, sub_ctx, sub_tool_ctx, max_steps=steps,
                              on_event=self._make_sub_on_event(sub_id, batch_id), confirm=None,
                              plan_mode=False, interrupt_event=self.interrupt_event,
@@ -277,7 +278,7 @@ class AgentLoop:
         if not self.ctx.needs_trim():
             return
         # 1) compaction：把最近窗口之前的早期消息压缩为摘要（优先，保留语义）
-        removed = compact_history(self.ctx, self.llm, self.ctx.budget, self.KEEP_RECENT_ROUNDS)
+        removed = compact_history(self.ctx, self.llm, self.ctx._cur_budget(), self.KEEP_RECENT_ROUNDS)
         if removed:
             self._emit(CompactedEvent(removed, summarized=True))
             if not self.ctx.needs_trim():

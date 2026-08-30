@@ -19,8 +19,9 @@ class MockLLM:
                 yield {"type": "text", "text": "（模拟模式）我将演示：查看环境 → 写文件 → 完成任务。"}
                 yield self._done([("mock_1", "run_command", {"command": "python --version"})])
         elif role == "tool":
-            content = (last.get("content") or "").lower()
-            if "python" in content:
+            # 按 tool_call_id 推进脚本（内容判断曾依赖 run_command 输出含 "python"，
+            # 在 PATH 缺失 python 的环境下端到端测试假阴性）
+            if last.get("tool_call_id") == "mock_1":
                 yield {"type": "text", "text": "\n环境正常，现在写一个示例文件。"}
                 yield self._done([("mock_2", "write_file", {"path": "hello.txt", "content": "Hello from mock agent!\n"})])
             else:

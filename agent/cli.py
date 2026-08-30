@@ -62,6 +62,7 @@ def _build_real(workspace: Path, args, on_event, confirm):
     from .context import Context
     from .llm import LLMClient
     from .loop import AgentLoop
+    from .models import context_window_for
     from .prompts import make_system_prompt
     from .tools import ToolContext, register_all
 
@@ -77,7 +78,18 @@ def _build_real(workspace: Path, args, on_event, confirm):
         base_url=cfg.base_url, api_key=cfg.api_key, model=cfg.model,
         temperature=cfg.temperature, max_tokens=cfg.max_tokens, timeout=cfg.timeout,
     )
-    ctx = Context(make_system_prompt(cfg.workspace), cfg.max_context_tokens)
+    # 上下文预算：AGENT_MAX_CONTEXT_TOKENS > 0 作硬上限（直接用）；
+    # = 0（默认）表示"用满模型窗口"，按模型真实窗口推导并留 10% 安全余量。
+    # 注意：绝不能把 0 直接当预算传进去——那会让 needs_trim() 恒成立，
+    # 主循环每一步都去做压缩/裁剪，历史被无谓压掉。
+    cap = cfg.max_context_tokens
+    if cap and cap > 0:
+        effective = cap
+    else:
+        effective = context_window_for(cfg.model) or 56000
+        effective = max(1024, int(effective * 0.90))
+    ctx = Context(make_system_prompt(cfg.workspace), effective,
+                  budget_resolver=lambda: effective, window_resolver=lambda: effective)
     return AgentLoop(llm, ctx, ToolContext(cfg.workspace), max_steps=cfg.max_steps,
                      on_event=on_event, confirm=confirm, plan_mode=args.plan)
 

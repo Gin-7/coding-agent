@@ -16,13 +16,30 @@ def make_ws(tmp, name: str) -> Path:
     return p
 
 
+def _fresh_dir(base: Path) -> Path:
+    """取一个干净的临时目录。
+
+    先尝试原地重建；若 rmtree 被 Windows 文件锁 / 安全删除拦截而残留，
+    则退化为带序号的新目录——否则各用例里的 mkdir() 会因目录已存在抛
+    FileExistsError，整批测试假阴性（这是测试设施问题，不是业务 bug）。
+    """
+    if base.exists():
+        shutil.rmtree(base, ignore_errors=True)
+    if not base.exists():
+        base.mkdir(parents=True, exist_ok=True)
+        return base
+    for i in range(2, 200):
+        cand = base.parent / f"{base.name}-{i}"
+        if not cand.exists():
+            cand.mkdir(parents=True, exist_ok=True)
+            return cand
+    raise RuntimeError(f"无法为测试准备干净目录: {base}")
+
+
 def run_tests(g: dict) -> int:
     """发现当前模块中以 test_ 开头的函数，逐个运行，返回退出码。"""
     name = g.get("__name__", "test").replace(".", "_")
-    tmp = TMP_ROOT / name
-    if tmp.exists():
-        shutil.rmtree(tmp, ignore_errors=True)
-    tmp.mkdir(parents=True, exist_ok=True)
+    tmp = _fresh_dir(TMP_ROOT / name)
     tests = [(n, fn) for n, fn in sorted(g.items()) if n.startswith("test_") and callable(fn)]
     passed = 0
     for n, fn in tests:

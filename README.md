@@ -66,7 +66,7 @@ REPL 内斜杠命令：`/stats`（token 统计）、`/tools`、`/clear`、`/help
 | `AGENT_API_KEY` | — | API key（也支持 `DEEPSEEK_API_KEY`） |
 | `AGENT_MODEL` | `deepseek-chat` | 模型名 |
 | `AGENT_BASE_URL` | `https://api.deepseek.com` | OpenAI 兼容网关地址 |
-| `AGENT_MAX_CONTEXT_TOKENS` | `56000` | 上下文预算 |
+| `AGENT_MAX_CONTEXT_TOKENS` | `0` | 上下文上限（`0` = 用满模型真实窗口并留 10% 余量；`>0` 作硬上限） |
 | `AGENT_MAX_STEPS` | `30` | 最大迭代步数 |
 
 Web 模式默认监听 `127.0.0.1:8080`，可用 `--port` 修改；`--mock` 无需 key 即可演示。
@@ -82,11 +82,13 @@ Web 模式默认监听 `127.0.0.1:8080`，可用 `--port` 修改；`--mock` 无�
 | `list_dir` | 目录浏览（文件 / 子目录 / 大小） |
 | `search` | 递归搜索文件内容（子串 / 正则） |
 | `glob` | 按 glob 模式查找文件（支持 `**` 递归） |
-| `run_command` | 执行命令（超时 + 进程树终止 + 危险命令黑名单 + 实时输出；支持后台运行） |
+| `run_command` | 执行命令（超时 + 进程树终止 + 危险命令黑名单 + 实时输出） |
+| `start_background` | 后台启动长命令（dev server / 构建 / 安装），不阻塞主循环 |
+| `poll_background` / `stop_background` / `list_background` | 后台任务：查状态与输出 / 停止（杀进程树）/ 列出 |
 | `git_status` / `git_diff` | 查看工作区改动 |
 | `git_commit` / `git_log` | 提交 / 查看提交历史 |
-| `start_subagent` / `start_subagents` | 派生子 agent（支持并行 / 异步批次、只读硬默认） |
-| `list_subagents` | 列出进行中的子 agent 批次 |
+| `spawn_subagent` / `spawn_subagents` | 派生子 agent：单个（同步）/ 多个并行（同步等待合并）；默认只读硬约束 |
+| `start_subagents` / `wait_subagents` / `list_subagent_batches` | 异步子 agent 批次：派出去不阻塞 → 稍后收结果 → 查状态 |
 | `finish` | 完成任务标记 |
 
 凭据文件（`.env` 系列）对 agent 不可读写、不可搜索。

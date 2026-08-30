@@ -4,7 +4,7 @@
 同一事件流同时用于终端渲染与 JSONL 持久化（可回放、可做回归测试）。
 """
 from dataclasses import asdict, dataclass
-from typing import Any
+from typing import Any, Optional
 
 
 @dataclass
@@ -105,7 +105,7 @@ class BackgroundStatus:
     """后台任务状态变化（done / stopped）。"""
     task_id: str
     status: str
-    exit_code: int = None
+    exit_code: Optional[int] = None
 
 
 @dataclass

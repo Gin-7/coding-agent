@@ -21,7 +21,8 @@ Web UI
 
 命令行（可选）：python -m agent "写 hello.py"  /  --plan "任务"（计划模式）
 配置：复制 .env.example 为 .env 填 AGENT_API_KEY（可选 AGENT_MODEL 等）
-工具：read/write/edit/undo_file、list_dir、search、glob、run_command(可后台)、
-git_*、start_subagent(s)、list_subagents、finish（凭据文件对 agent 不可读写）
+工具：read/write/edit/undo_file、list_dir、search、glob、run_command、
+start_background（后台）、git_*、spawn_subagent(s)、start/wait_subagents、
+finish（凭据文件对 agent 不可读写）
 架构：事件驱动（主循环只 _emit，CLI/Web SSE/JSONL 为订阅者）；上下文三层压缩；
 子 agent 独立上下文、运行时流式上行。测试：python tests/run_all.py

@@ -50,8 +50,13 @@ def test_background_events(tmp):
     ws, ctx = _mgr_ctx(tmp, "bgev")
     events = []
     ctx.background.emit = events.append
-    dispatch("start_background", {"command": "echo hi"}, ctx)
-    time.sleep(0.4)
+    r = dispatch("start_background", {"command": "echo hi"}, ctx)
+    assert r["ok"], r["output"]
+    # 轮询等待而非固定 sleep：机器繁忙时进程启动 + 读线程收尾可能超过 0.4s（曾造成偶发假阴性）
+    for _ in range(50):
+        if any(e.get("type") == "BackgroundStatus" for e in events):
+            break
+        time.sleep(0.1)
     assert any(e.get("type") == "BackgroundStarted" for e in events)
     assert any(e.get("type") == "BackgroundStatus" for e in events)
 
