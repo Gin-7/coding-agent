@@ -17,11 +17,10 @@ import urllib.parse
 import datetime as _dt
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from .config import find_env_file
+from .config import find_env_file, prepare_state_dir, state_dir
 from .events import ContextUsageEvent
 
 WEB_UI_DIR = Path(__file__).resolve().parent / "web_ui"
-SESSIONS_DIR_NAME = "sessions"
 MAX_SESSION_NAME = 24
 MAX_SESSIONS_SHOWN = 100
 SETTINGS_FILE_NAME = ".agent-settings.json"
@@ -79,7 +78,9 @@ class Workspace:
     def __init__(self, root: Path, display_name: str = None):
         self.root = Path(root).resolve()
         self.display_name = display_name
-        self.sessions_dir = self.root / SESSIONS_DIR_NAME
+        # agent 状态（会话/配置/记忆/备份）统一放 .coding-agent/，并迁移旧版散落布局
+        state = prepare_state_dir(self.root)
+        self.sessions_dir = state / "sessions"
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.session_map: dict = {}
         self.active_filename = None
@@ -176,14 +177,16 @@ class WebAgentServer:
         self.interrupt_event = threading.Event()
         self._pending_confirm = None
         self._lock = threading.Lock()
+        # 面板设置/工作区注册表收进 .coding-agent/（旧版根目录文件一次性迁入），先于注册表加载
+        state = prepare_state_dir(self.default_root)
         self._load_registry()
-        self.settings_path = self.default_root / SETTINGS_FILE_NAME
+        self.settings_path = state / SETTINGS_FILE_NAME
         self.settings = self._load_settings()
 
     # ---------- 工作区注册表（左侧边栏展示所有工作区） ----------
 
     def _registry_path(self):
-        return self.default_root / ".agent-workspaces.json"
+        return state_dir(self.default_root) / ".agent-workspaces.json"
 
     def _load_registry(self):
         p = self._registry_path()
@@ -239,7 +242,7 @@ class WebAgentServer:
             return {}
         return {k: data[k] for k in ("theme", "sidebar_collapsed", "right_collapsed",
                                      "model", "model_url", "model_key", "permission",
-                                     "max_context_tokens", "max_tokens") if k in data}
+                                     "max_context_tokens", "max_tokens", "max_steps") if k in data}
 
     def _save_settings(self) -> None:
         try:
@@ -278,10 +281,22 @@ class WebAgentServer:
                     pass
             if patch.get("permission") in ("auto", "ask", "plan"):
                 self.settings["permission"] = patch["permission"]
+            if "max_steps" in patch:
+                # 单次任务最大迭代步数：限制合理区间 [1, 500]，非法/非正数忽略
+                try:
+                    iv = int(patch["max_steps"])
+                except (TypeError, ValueError):
+                    iv = 0
+                if iv > 0:
+                    self.settings["max_steps"] = min(500, iv)
             self._save_settings()
             # 模型相关设置写回 .env，使面板改动与 .env 配置保持一致（.env 已被 gitignore）
             self._sync_env(patch)
             self._apply_permission_plan()
+            # 步数上限热生效：下一次 run() 即按新值执行（对正在运行的任务无影响）
+            loop = getattr(self, "loop", None)
+            if loop is not None and "max_steps" in self.settings:
+                loop.max_steps = self.settings["max_steps"]
             # 设置变更（尤其上下文窗口上限 / 模型）后主动广播一次上下文使用率，
             # 使前端环形指示器的分母（预算/窗口）无需等到下条消息才刷新。
             # 全新会话同样归零显示（仅刷新分母），避免把系统提示词估算当成"已使用"
@@ -295,15 +310,16 @@ class WebAgentServer:
         return self.get_settings()
 
     def _sync_env(self, patch: dict) -> None:
-        """把面板改动的模型/BaseURL/Key/上下文上限 同步写回 .env（保留其余行/注释）。"""
+        """把面板改动的模型/BaseURL/Key/上下文上限/步数 同步写回 .env（保留其余行/注释）。"""
         mapping = {"model": "AGENT_MODEL", "model_url": "AGENT_BASE_URL", "model_key": "AGENT_API_KEY",
-                   "max_context_tokens": "AGENT_MAX_CONTEXT_TOKENS", "max_tokens": "AGENT_MAX_TOKENS"}
+                   "max_context_tokens": "AGENT_MAX_CONTEXT_TOKENS", "max_tokens": "AGENT_MAX_TOKENS",
+                   "max_steps": "AGENT_MAX_STEPS"}
         wants = {}
         for k, env_key in mapping.items():
             if k not in patch:
                 continue
             val = patch[k]
-            if k in ("max_context_tokens", "max_tokens"):
+            if k in ("max_context_tokens", "max_tokens", "max_steps"):
                 # 仅接受合法整数并夹到安全区间，避免把非法值写进 .env 导致下次启动 Config 崩溃
                 try:
                     ival = int(val)
@@ -312,8 +328,10 @@ class WebAgentServer:
                 if k == "max_context_tokens":
                     if ival < 0:
                         continue
-                else:  # max_tokens：单次生成上限，限制 [256, 65536]
+                elif k == "max_tokens":  # 单次生成上限，限制 [256, 65536]
                     ival = max(256, min(65536, ival))
+                else:  # max_steps：单次任务步数上限，限制 [1, 500]
+                    ival = max(1, min(500, ival))
                 wants[env_key] = str(ival)
             else:
                 if val == "":
@@ -702,6 +720,8 @@ class WebAgentServer:
             return {"error": "目录不存在"}, 404
         entries = []
         for e in sorted(root.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+            if e.name == ".coding-agent":
+                continue  # agent 自身状态目录，不作为用户文件展示
             try:
                 size = e.stat().st_size if e.is_file() else None
             except OSError:
@@ -1090,7 +1110,15 @@ def _build_loop(workspace: Path, args, on_event, hub, web):
     confirm = web.confirm if permission in ("ask", "plan") else None
     ctx = Context(make_system_prompt(workspace), budget, budget_resolver=budget_resolver,
                   window_resolver=window_resolver)
-    return AgentLoop(llm, ctx, ToolContext(workspace), max_steps=args.max_steps or 30,
+    # 步数上限：CLI 参数 > 面板设置 > .env/默认（面板改动会同步 .env 并热生效，见 update_settings）
+    max_steps = args.max_steps
+    if not max_steps:
+        try:
+            max_steps = int(web.settings.get("max_steps") or 0)
+        except (TypeError, ValueError):
+            max_steps = 0
+        max_steps = max_steps if max_steps > 0 else cfg.max_steps
+    return AgentLoop(llm, ctx, ToolContext(workspace), max_steps=max_steps,
                      on_event=on_event, confirm=confirm, plan_mode=plan,
                      interrupt_event=web.interrupt_event)
 

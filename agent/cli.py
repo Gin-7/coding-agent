@@ -73,7 +73,7 @@ def _build_real(workspace: Path, args, on_event, confirm):
     if not cfg.api_key:
         raise SystemExit(
             "未找到 API key：请设置环境变量 AGENT_API_KEY / DEEPSEEK_API_KEY，"
-            "或在工作区 .env 中提供（.env 已被 .gitignore 排除，不会入库）。"
+            "或在工作区 .coding-agent/.env 中提供（不会入库）。"
         )
     llm = LLMClient(
         base_url=cfg.base_url, api_key=cfg.api_key, model=cfg.model,
@@ -104,7 +104,7 @@ def _build_mock(workspace: Path, max_steps, budget, on_event, confirm, plan_mode
 
     register_all()
     ctx = Context(make_system_prompt(workspace), budget or 56000)
-    return AgentLoop(MockLLM(), ctx, ToolContext(workspace), max_steps=max_steps or 30,
+    return AgentLoop(MockLLM(), ctx, ToolContext(workspace), max_steps=max_steps or 50,
                      on_event=on_event, confirm=confirm, plan_mode=plan_mode)
 
 
@@ -191,6 +191,7 @@ def main(argv=None) -> int:
         return run_server(workspace, args, port=args.port)
 
     from .events import event_to_dict
+    from .config import prepare_state_dir, state_dir
     from .renderer import CliRenderer
     from .session import Session
 
@@ -198,7 +199,11 @@ def main(argv=None) -> int:
     # 规划模式强制交互确认计划；权限 ask 时命令级确认
     confirm = _confirm_interactive if (args.permission == "ask" or args.plan) else None
 
-    with Session(workspace / "sessions") as session:
+    # agent 状态目录：迁移旧版散落布局 + 预置 .env，会话/记忆/备份统一放 .coding-agent/
+    prepare_state_dir(workspace)
+    sessions_dir = state_dir(workspace) / "sessions"
+
+    with Session(sessions_dir) as session:
         def on_event(ev):
             renderer.emit(ev)
             session.log(event_to_dict(ev))
@@ -214,7 +219,7 @@ def main(argv=None) -> int:
         if args.resume or args.resume_file:
             from .session import latest_session, load_messages
             from .prompts import make_system_prompt
-            resume_path = Path(args.resume_file) if args.resume_file else latest_session(workspace / "sessions")
+            resume_path = Path(args.resume_file) if args.resume_file else latest_session(sessions_dir)
             if not resume_path or not resume_path.exists():
                 print(f"未找到可恢复的会话: {args.resume_file or '(最近一次)'}")
                 return 1
@@ -227,8 +232,8 @@ def main(argv=None) -> int:
             else:
                 print(f"[警告] 会话中没有可恢复的历史: {resume_path.name}")
 
-        # 工作区记忆：会话开始注入 .agent-memory.md 内容（恢复会话时避免重复注入）
-        memory_file = workspace / ".agent-memory.md"
+        # 工作区记忆：会话开始注入 .coding-agent/.agent-memory.md 内容（恢复会话时避免重复注入）
+        memory_file = state_dir(workspace) / ".agent-memory.md"
         if memory_file.exists() and not any(
                 "[工作区记忆]" in (m.get("content") or "") for m in loop.ctx.messages):
             content = memory_file.read_text(encoding="utf-8", errors="replace")[:4000]

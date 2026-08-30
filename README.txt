@@ -20,7 +20,7 @@ Web UI
 - 明暗主题与布局服务端持久化；零额外前端依赖（http.server+SSE / 纯 HTML/CSS/JS）。
 
 命令行（可选）：python -m agent "写 hello.py"  /  --plan "任务"（计划模式）
-配置：复制 .env.example 为 .env 填 AGENT_API_KEY（可选 AGENT_MODEL 等）
+配置：复制 .env.example 为 .coding-agent/.env 填 AGENT_API_KEY；agent 状态统一存 .coding-agent/
 工具：read/write/edit/undo_file、list_dir、search、glob、run_command、
 start_background（后台）、git_*、spawn_subagent(s)、start/wait_subagents、
 finish（凭据文件对 agent 不可读写）

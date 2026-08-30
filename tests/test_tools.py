@@ -182,11 +182,28 @@ def test_credentials_protected(tmp):
     register_all()
     ws = make_ws(tmp, "creds")
     (ws / ".env").write_text("SECRET_KEY=abc123\n", encoding="utf-8")
+    (ws / ".coding-agent" / "sessions").mkdir(parents=True)
+    (ws / ".coding-agent" / "sessions" / "session-x.jsonl").write_text("{}", encoding="utf-8")
     ctx = ToolContext(ws)
     assert not dispatch("read_file", {"path": ".env"}, ctx)["ok"]
     assert not dispatch("write_file", {"path": ".env", "content": "x"}, ctx)["ok"]
     assert not dispatch("edit_file", {"path": ".env", "old": "x", "new": "y"}, ctx)["ok"]
     assert "未找到" in dispatch("search", {"pattern": "SECRET_KEY"}, ctx)["output"]
+
+    # .coding-agent/ 是 agent 自身状态目录：除记忆文件外一律不可读写，也不进搜索/列表
+    for tool, args in (("read_file", {"path": ".coding-agent/sessions/session-x.jsonl"}),
+                       ("write_file", {"path": ".coding-agent/x", "content": "x"}),
+                       ("list_dir", {"path": ".coding-agent"})):
+        assert not dispatch(tool, args, ctx)["ok"], (tool, args)
+    out = dispatch("search", {"pattern": "session-x"}, ctx)["output"]
+    assert "未找到" in out
+    out = dispatch("list_dir", {"path": "."}, ctx)["output"]
+    assert ".coding-agent" not in out
+    out = dispatch("glob", {"pattern": "**/*.jsonl"}, ctx)["output"]
+    assert "session-x" not in out
+    # 例外：记忆文件可写（agent 跨会话记忆）
+    r = dispatch("write_file", {"path": ".coding-agent/.agent-memory.md", "content": "# 记忆\n"}, ctx)
+    assert r["ok"], r["output"]
 
 
 def test_git_tools(tmp):

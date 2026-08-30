@@ -1,11 +1,12 @@
 """文件工具：read_file / write_file / edit_file / undo_file。
 
-edit_file / write_file 修改已有文件前自动备份到 .agent-backups/，
+edit_file / write_file 修改已有文件前自动备份到 .coding-agent/.agent-backups/，
 undo_file 从备份恢复最近一次修改（磁盘备份，跨会话可用）。
 """
 import shutil
 from pathlib import Path
 
+from ..config import STATE_DIR_NAME
 from .paths import ensure_safe_file, resolve_workspace_path
 from .registry import register
 
@@ -15,7 +16,7 @@ MAX_READ_LINES = 2000
 # 直接顶穿模型窗口被 API 以 400 打回，且这个"最后一条工具结果"恰好是三层降级
 # 策略裁不掉的部分（裁剪/压缩都保护最近轮次）。所以必须在源头截断。
 MAX_READ_CHARS = 30000
-BACKUP_ROOT = ".agent-backups"
+BACKUP_ROOT = STATE_DIR_NAME + "/.agent-backups"
 
 
 def _backup(tool_ctx, p: Path) -> None:

@@ -43,13 +43,13 @@ python -m agent                  # 交互式 REPL，多轮对话
     - 子 agent：对话式详情（prompt + 工具调用 + 输出，与主 agent 一致）
   - 当前选中的文件 / 任务项会高亮
 - **权限模式**（输入区下拉）：`自动编辑` / `变更前确认` / `计划模式`（先只读探索 → 交出计划 → **批准后执行**）
-- **设置弹窗**：明暗主题、模型、工具列表、关于；主题与布局服务端持久化（`.agent-settings.json`），重启 / 换浏览器不丢
+- **设置弹窗**：明暗主题、模型、工具列表、关于；主题与布局服务端持久化（`.coding-agent/.agent-settings.json`），重启 / 换浏览器不丢
 
 ## 命令行模式（REPL）
 
 ```bash
 python -m agent --resume "继续上一个任务：..."        # 从最近会话恢复
-python -m agent --resume-file sessions/session-xxx.jsonl "..."   # 指定会话恢复
+python -m agent --resume-file .coding-agent/sessions/session-xxx.jsonl "..."   # 指定会话恢复
 python -m agent --permission ask "任务"               # 审批模式：命令 / 提交需确认
 python -m agent --plan "任务"                         # 规划模式：只读探索 → 输出计划 → 终端确认批准后执行
 python -m agent --version / --tools                  # 版本 / 列工具
@@ -59,7 +59,7 @@ REPL 内斜杠命令：`/stats`（token 统计）、`/tools`、`/clear`、`/help
 
 ## 配置
 
-复制 `.env.example` 为 `.env` 并填入 API key（或设置环境变量）：
+复制 `.env.example` 为 `.coding-agent/.env` 并填入 API key（或设置环境变量）：
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
@@ -67,7 +67,7 @@ REPL 内斜杠命令：`/stats`（token 统计）、`/tools`、`/clear`、`/help
 | `AGENT_MODEL` | `deepseek-chat` | 模型名 |
 | `AGENT_BASE_URL` | `https://api.deepseek.com` | OpenAI 兼容网关地址 |
 | `AGENT_MAX_CONTEXT_TOKENS` | `0` | 上下文上限（`0` = 用满模型真实窗口并留 10% 余量；`>0` 作硬上限） |
-| `AGENT_MAX_STEPS` | `30` | 最大迭代步数 |
+| `AGENT_MAX_STEPS` | `50` | 单次任务最大迭代步数（子 agent 单独上限 20；Web 设置面板可调） |
 
 Web 模式默认监听 `127.0.0.1:8080`，可用 `--port` 修改；`--mock` 无需 key 即可演示。
 
@@ -78,7 +78,7 @@ Web 模式默认监听 `127.0.0.1:8080`，可用 `--port` 修改；`--mock` 无�
 | `read_file` | 读取文件（带行号，分页） |
 | `write_file` | 创建 / 整体覆盖写入文件（UTF-8） |
 | `edit_file` | 精确搜索-替换，保留原文件行尾风格 |
-| `undo_file` | 撤销最近一次修改（自动备份于 `.agent-backups/`） |
+| `undo_file` | 撤销最近一次修改（自动备份于 `.coding-agent/.agent-backups/`） |
 | `list_dir` | 目录浏览（文件 / 子目录 / 大小） |
 | `search` | 递归搜索文件内容（子串 / 正则） |
 | `glob` | 按 glob 模式查找文件（支持 `**` 递归） |
@@ -91,7 +91,7 @@ Web 模式默认监听 `127.0.0.1:8080`，可用 `--port` 修改；`--mock` 无�
 | `start_subagents` / `wait_subagents` / `list_subagent_batches` | 异步子 agent 批次：派出去不阻塞 → 稍后收结果 → 查状态 |
 | `finish` | 完成任务标记 |
 
-凭据文件（`.env` 系列）对 agent 不可读写、不可搜索。
+凭据文件（`.env` 系列）与 agent 状态目录 `.coding-agent/`（记忆文件除外）对 agent 不可读写、不可搜索。
 
 ## 架构要点
 
@@ -106,6 +106,6 @@ python tests/run_all.py            # 全量（纯标准库，无需 pytest）
 python tests/test_tools.py         # 单模块
 ```
 
-工作区记忆：`.agent-memory.md`（不入库）记录跨会话约定，会话开始自动注入上下文。
+工作区记忆：`.coding-agent/.agent-memory.md`（不入库）记录跨会话约定，会话开始自动注入上下文。
 
 设计文档见 `DESIGN.md`；精简提交版说明见 `README.txt`。

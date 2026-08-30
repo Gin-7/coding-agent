@@ -211,8 +211,14 @@
           <input id="max-tokens-input" class="settings-input" type="number" min="256" step="256" placeholder="8192" autocomplete="off" spellcheck="false">
         </div>
 
+        <div class="field-row">
+          <label class="field-label" for="max-steps-input">单次任务最大步数 (max_steps)</label>
+          <input id="max-steps-input" class="settings-input" type="number" min="1" max="500" step="1" placeholder="50" autocomplete="off" spellcheck="false">
+        </div>
+
         <p class="field-hint">设置后下一次运行生效。模型名 / Base URL / API Key 会优先于工作区 .env 中的同名配置；留空则沿用 .env。API Key 以明文保存在本地 .agent-settings.json，请勿在共享环境使用。</p>
         <p class="field-hint">上下文窗口上限：设为大于 0 的 token 数作为上下文硬上限（可临时压小窗口测试压缩），设为 0（默认）则使用模型完整窗口。该值会写回工作区 .env 的 AGENT_MAX_CONTEXT_TOKENS，并在运行中热切换生效。</p>
+        <p class="field-hint">最大步数：主循环单次任务的迭代上限（每步一次模型调用，子 agent 单独上限 20 步）。到达上限任务以超时结束、上下文保留，可继续对话接力。该值会写回工作区 .env 的 AGENT_MAX_STEPS，改动即时对下一次任务生效。</p>
       </div>
       <div id="tab-about" class="stab"><h4>关于</h4><p class="about-text">Coding Agent · 自研编程智能体<br>事件驱动架构 · 零框架依赖</p></div>
     </div>
@@ -239,6 +245,6 @@
 <!-- 树节点三点菜单（工作区 / 会话共用，fixed 定位挂 body） -->
 <div id="ctx-menu" class="ctx-menu" hidden></div>
 
-<script src="/app.js?v=55"></script>
+<script src="/app.js?v=56"></script>
 </body>
 </html>

@@ -8,9 +8,9 @@ def make_system_prompt(workspace) -> str:
 文件工具的路径默认相对工作区根目录，不允许越界访问。
 
 工作区记忆：
-- 若存在 .agent-memory.md，其内容会在会话开始时注入，请遵循其中的约定与进展记录
-- 任务中产生了值得跨会话保留的事实（关键约定、已完成/待办、重要决策）时，用 write_file 更新 .agent-memory.md（保持简洁，500 字以内）
-- 该文件不会提交到 git，可放心写入
+- 若存在 .coding-agent/.agent-memory.md，其内容会在会话开始时注入，请遵循其中的约定与进展记录
+- 任务中产生了值得跨会话保留的事实（关键约定、已完成/待办、重要决策）时，用 write_file 更新 .coding-agent/.agent-memory.md（保持简洁，500 字以内）
+- agent 自身状态统一放在 .coding-agent/ 目录（受保护不可读写），该目录与记忆文件均不会提交到 git
 
 工作方式：
 - 使用与用户相同的语言回复。

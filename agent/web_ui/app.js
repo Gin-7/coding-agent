@@ -1088,6 +1088,10 @@ document.getElementById("max-tokens-input").addEventListener("change", e => {
   const v = parseInt(e.target.value, 10);
   saveSettings({ max_tokens: (Number.isFinite(v) && v >= 256) ? v : 8192 });
 });
+document.getElementById("max-steps-input").addEventListener("change", e => {
+  const v = parseInt(e.target.value, 10);
+  saveSettings({ max_steps: (Number.isFinite(v) && v >= 1) ? Math.min(v, 500) : 50 });
+});
 
 /* ---------- 审批（非阻塞浮层：不遮罩全屏，可继续浏览 / 滚动 / 操作，可收起为小条） ---------- */
 function showConfirm(name, desc) {
@@ -1308,6 +1312,7 @@ async function loadSettings() {
     if (typeof s.model_key === "string") document.getElementById("model-key-input").value = s.model_key;
     if (typeof s.max_context_tokens === "number") document.getElementById("max-context-input").value = s.max_context_tokens;
     if (typeof s.max_tokens === "number") document.getElementById("max-tokens-input").value = s.max_tokens;
+    if (typeof s.max_steps === "number") document.getElementById("max-steps-input").value = s.max_steps;
     if (s.permission === "auto" || s.permission === "ask" || s.permission === "plan") setPermission(s.permission, false);
   } catch (e) { }
 }

@@ -2,9 +2,6 @@
 .env
 *.env
 
-# 其它工具的本地状态
-.workbuddy/
-
 # Python
 __pycache__/
 *.py[cod]
@@ -12,17 +9,11 @@ __pycache__/
 .venv/
 venv/
 
-# 会话日志（本地调试产物）
-sessions/
+# agent 自身状态（会话/记忆/备份/面板设置/工作区注册表），与用户文件分离
+.coding-agent/
 
 # 测试临时目录
 .test-tmp/
-
-# 工作区记忆与编辑备份
-.agent-memory.md
-.agent-backups/
-.agent-workspaces.json
-.agent-settings.json
 
 # mock 演示产物
 hello.txt

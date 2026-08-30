@@ -3,22 +3,28 @@ import os
 import re
 from pathlib import Path
 
-from .paths import resolve_workspace_path
+from .paths import PathError, resolve_workspace_path
 from .registry import register
+
+from ..config import STATE_DIR_NAME
 
 MAX_LIST_ENTRIES = 200
 MAX_SEARCH_MATCHES = 100
 MAX_GLOB_RESULTS = 200
-SEARCH_SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules", "sessions",
-                    ".test-tmp", ".idea", ".vscode", ".agent-backups"}
+# .coding-agent 是 agent 自身状态（会话/记忆/备份），不进搜索与列表，避免污染上下文
+SEARCH_SKIP_DIRS = {".git", "__pycache__", ".venv", "venv", "node_modules",
+                    ".coding-agent", ".test-tmp", ".idea", ".vscode"}
 SEARCH_SKIP_FILES = {".env", ".gitignore"}
 
 
 def tool_list_dir(tool_ctx, path: str = ".") -> str:
     p = resolve_workspace_path(tool_ctx.workspace, path or ".")
+    if STATE_DIR_NAME in p.parts:
+        raise PathError(f"agent 状态目录受保护，不允许访问：{path}")
     if not p.is_dir():
         return f"目录不存在: {path}"
-    entries = sorted(p.iterdir(), key=lambda e: (not e.is_dir(), e.name.lower()))
+    entries = sorted((e for e in p.iterdir() if e.name != STATE_DIR_NAME),
+                     key=lambda e: (not e.is_dir(), e.name.lower()))
     lines = []
     shown = 0
     for e in entries:

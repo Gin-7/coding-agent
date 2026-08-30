@@ -659,3 +659,17 @@ button.close:hover { color: var(--text); }
 /* 对话区滚动条补上同款 hover 反馈，行为一致 */
 #chat-scroll::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, .32); }
 #chat-scroll { scrollbar-width: thin; scrollbar-color: rgba(148, 163, 184, .25) transparent; }
+
+/* ---------- 设置面板滚动条：与侧边栏/对话区同款 ---------- */
+.settings-content, .tools-grid {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, .25) transparent;
+}
+.settings-content::-webkit-scrollbar, .tools-grid::-webkit-scrollbar { width: 8px; height: 8px; }
+.settings-content::-webkit-scrollbar-track, .tools-grid::-webkit-scrollbar-track { background: transparent; }
+.settings-content::-webkit-scrollbar-thumb, .tools-grid::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, .18); border-radius: 6px;
+}
+.settings-content::-webkit-scrollbar-thumb:hover, .tools-grid::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, .32);
+}

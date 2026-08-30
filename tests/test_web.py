@@ -149,7 +149,7 @@ def test_settings_persist(tmp):
     # 合法键保存，未知键忽略
     out = web.update_settings({"theme": "light", "sidebar_collapsed": True, "evil": "x"})
     assert out == {"theme": "light", "sidebar_collapsed": True}
-    data = _json.loads((ws / SETTINGS_FILE_NAME).read_text(encoding="utf-8"))
+    data = _json.loads((ws / ".coding-agent" / SETTINGS_FILE_NAME).read_text(encoding="utf-8"))
     assert data["theme"] == "light" and data["sidebar_collapsed"] is True
 
     # 新实例（模拟服务重启）读回；非法值不覆盖
@@ -157,6 +157,22 @@ def test_settings_persist(tmp):
     assert web2.get_settings() == {"theme": "light", "sidebar_collapsed": True}
     web2.update_settings({"theme": "blue", "sidebar_collapsed": "yes"})
     assert web2.get_settings() == {"theme": "light", "sidebar_collapsed": True}
+
+    # max_steps：合法值落盘 + 同步 .env；非法/越界值夹取或忽略。
+    # 新工作区经 prepare_state_dir 预置了 .coding-agent/.env，_sync_env 就近写入，
+    # 不会再越界写到上级（回归覆盖：曾把 AGENT_MAX_STEPS 写进项目真实 .env）。
+    web2.update_settings({"max_steps": 80})
+    assert web2.get_settings()["max_steps"] == 80
+    env_path = ws / ".coding-agent" / ".env"
+    assert env_path.exists(), "新工作区应预置 .coding-agent/.env"
+    assert "AGENT_MAX_STEPS=80" in env_path.read_text(encoding="utf-8")
+    assert not (ws / ".env").exists(), "预置 .env 后不应再向上写旧路径"
+    web2.update_settings({"max_steps": 10000})   # 越上界 → 夹到 500
+    assert web2.get_settings()["max_steps"] == 500
+    assert "AGENT_MAX_STEPS=500" in env_path.read_text(encoding="utf-8")
+    web2.update_settings({"max_steps": 0})       # 非正数 → 忽略，保留旧值
+    web2.update_settings({"max_steps": "abc"})   # 非整数 → 忽略
+    assert web2.get_settings()["max_steps"] == 500
 
     # HTTP 端到端：POST /api/settings → GET /api/settings
     from agent.context import Context
@@ -181,7 +197,14 @@ def test_settings_persist(tmp):
             assert _json.loads(r.read())["theme"] == "light"
         with urllib.request.urlopen(base + "/api/settings", timeout=10) as r:
             assert _json.loads(r.read())["theme"] == "light"
-        assert _json.loads((ws2 / SETTINGS_FILE_NAME).read_text(encoding="utf-8"))["theme"] == "light"
+        assert _json.loads((ws2 / ".coding-agent" / SETTINGS_FILE_NAME).read_text(encoding="utf-8"))["theme"] == "light"
+
+        # max_steps 热生效：面板改动立即作用于运行中的 loop（对下一次 run 生效）
+        req = urllib.request.Request(base + "/api/settings", data=_json.dumps(
+            {"max_steps": 66}).encode("utf-8"), headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as r:
+            assert _json.loads(r.read())["max_steps"] == 66
+        assert web.loop.max_steps == 66
     finally:
         httpd.shutdown()
         httpd.server_close()
@@ -227,12 +250,12 @@ def test_workspace_session_management(tmp):
         code, d = post_raw("/api/workspace/rename", {"path": str(ws), "name": "我的项目"})
         assert code == 200 and d["ok"] and d["name"] == "我的项目"
         assert find_ws(ws)["name"] == "我的项目"
-        reg = _json.loads((ws / ".agent-workspaces.json").read_text(encoding="utf-8"))
+        reg = _json.loads((ws / ".coding-agent" / ".agent-workspaces.json").read_text(encoding="utf-8"))
         assert reg["names"] and list(reg["names"].values()) == ["我的项目"]
         # 改回文件夹名 = 清除别名
         code, d = post_raw("/api/workspace/rename", {"path": str(ws), "name": ws.name})
         assert code == 200 and d["ok"] and d["name"] == ws.name
-        reg = _json.loads((ws / ".agent-workspaces.json").read_text(encoding="utf-8"))
+        reg = _json.loads((ws / ".coding-agent" / ".agent-workspaces.json").read_text(encoding="utf-8"))
         assert reg["names"] == {}
         # 空名称拒绝
         code, d = post_raw("/api/workspace/rename", {"path": str(ws), "name": "  "})
@@ -334,7 +357,7 @@ def test_session_robustness(tmp):
             return e.code, _json.loads(e.read())
 
     def session_path(filename):
-        return ws / "sessions" / filename
+        return ws / ".coding-agent" / "sessions" / filename
 
     try:
         # 启动时的默认会话：已激活但未落盘
