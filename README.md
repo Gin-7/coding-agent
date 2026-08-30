@@ -70,6 +70,7 @@ REPL 内斜杠命令：`/stats`（token 统计）、`/tools`、`/clear`、`/help
 | `AGENT_MAX_STEPS` | `50` | 单次任务最大迭代步数（子 agent 单独上限 20；Web 设置面板可调） |
 
 Web 模式默认监听 `127.0.0.1:8080`，可用 `--port` 修改；`--mock` 无需 key 即可演示。
+工作区默认取启动目录；在源码仓库内启动时首次进入 `.coding-agent/default-workspace/` 干净沙箱（源码仓库可手动添加为工作区），也可用 `--workspace` 指定。
 
 ## 内置工具
 

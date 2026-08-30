@@ -138,6 +138,27 @@ def test_web_server_endpoints(tmp):
         httpd.server_close()
 
 
+def test_first_launch_sandbox(tmp):
+    """首启沙箱：源码仓库内启动默认进入 .coding-agent/default-workspace（仓库本身
+    不再作为默认工作区）；显式 --workspace 与普通目录行为不变。"""
+    from agent.config import first_launch_workspace, is_source_repo
+
+    repo = make_ws(tmp, "repo")
+    (repo / "agent").mkdir()
+    (repo / "agent" / "web.py").write_text("# sentinel\n", encoding="utf-8")
+    (repo / "agent" / "__main__.py").write_text("", encoding="utf-8")
+    assert is_source_repo(repo)
+
+    ws1 = first_launch_workspace(repo)
+    assert ws1 == repo / ".coding-agent" / "default-workspace" and ws1.is_dir()
+    assert first_launch_workspace(repo) == ws1  # 跨次启动稳定
+    assert first_launch_workspace(repo, explicit=True) == repo.resolve()
+
+    plain = make_ws(tmp, "plain")
+    assert first_launch_workspace(plain) == plain.resolve()
+    assert not is_source_repo(plain)
+
+
 def test_settings_persist(tmp):
     """设置持久化：白名单校验 + 落盘 .agent-settings.json + 重启后读回。"""
     from agent.web import EventHub, SETTINGS_FILE_NAME, WebAgentServer, Workspace

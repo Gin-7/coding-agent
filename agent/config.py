@@ -25,6 +25,29 @@ def state_dir(workspace: Path) -> Path:
     return Path(workspace) / STATE_DIR_NAME
 
 
+def is_source_repo(workspace: Path) -> bool:
+    """哨兵检测：该目录是否为 agent 自身的源码仓库。"""
+    ws = Path(workspace)
+    return (ws / "agent" / "web.py").is_file() and (ws / "agent" / "__main__.py").is_file()
+
+
+def first_launch_workspace(workspace: Path, explicit: bool = False) -> Path:
+    """Web 首启工作区解析：在源码仓库内启动时指向干净沙箱，仓库本身不再作为默认工作区。
+
+    理由：README 场景在仓库内启动，CWD 约定会把 agent 源码当成默认工作区
+    （auto-edit 下有误改自身的风险）。重定向目标固定为
+    <仓库>/.coding-agent/default-workspace（gitignored），跨次启动稳定；
+    全局设置/注册表随之放在仓库的 .coding-agent/ 下。用户自己的项目目录
+    不含哨兵文件，行为不变；显式传入 --workspace 时完全尊重。
+    """
+    ws = Path(workspace).resolve()
+    if explicit or not is_source_repo(ws):
+        return ws
+    sandbox = state_dir(ws) / "default-workspace"
+    sandbox.mkdir(parents=True, exist_ok=True)
+    return sandbox
+
+
 def prepare_state_dir(workspace: Path) -> Path:
     """确保状态目录存在；新工作区立即预置空 .env（面板写入不会越界到上级）。
 

@@ -188,7 +188,10 @@ def main(argv=None) -> int:
 
     if args.web:
         from .web import run_server
-        return run_server(workspace, args, port=args.port)
+        from .config import first_launch_workspace
+        # 在源码仓库内启动时首启进入干净沙箱（显式 --workspace 不受影响）
+        return run_server(first_launch_workspace(workspace, explicit=bool(args.workspace)),
+                          args, port=args.port)
 
     from .events import event_to_dict
     from .config import prepare_state_dir, state_dir
