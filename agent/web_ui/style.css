@@ -580,3 +580,82 @@ button.close:hover { color: var(--text); }
   #rp-resizer { display: none; }
   #sidebar { width: 200px; }
 }
+
+/* ---------- 树节点管理（工作区/会话三点菜单、置顶、归档、内联重命名） ---------- */
+/* 危险操作专用红（删除工作区等）：与整体低饱和风格协调的柔和红 */
+:root { --danger: #e06c60; }
+[data-theme="light"] { --danger: #cf3f3f; }
+
+/* 三点按钮：工作区行常驻（与新建会话按钮并排），会话行悬浮时替换相对时间 */
+.tree-ws .ws-gear, .tree-session .session-gear {
+  background: transparent; border: none; color: var(--muted); cursor: pointer;
+  padding: 3px; border-radius: 6px; display: inline-flex; align-items: center;
+  justify-content: center; flex-shrink: 0;
+}
+.tree-ws .ws-gear:hover, .tree-session .session-gear:hover { color: var(--text); background: var(--border); }
+.tree-ws .ws-gear svg, .tree-session .session-gear svg { width: 14px; height: 14px; display: block; }
+.tree-session .session-time { transition: opacity .12s; }
+.tree-session:hover .session-time { display: none; }
+.tree-session:hover .session-gear { display: inline-flex; }
+.tree-session .session-gear { display: none; }
+/* 置顶标识（名字右侧的小图钉） */
+.session-pin { flex-shrink: 0; display: inline-flex; align-items: center; color: var(--accent); }
+.session-pin svg { width: 11px; height: 11px; display: block; }
+/* 已归档折叠区 */
+.tree-archived-head {
+  display: flex; align-items: center; gap: 5px; margin-top: 2px;
+  padding: 4px 8px 2px; font-size: 11px; color: var(--muted);
+  cursor: pointer; user-select: none; border-radius: 6px;
+}
+.tree-archived-head:hover { color: var(--text); }
+.tree-archived-head .caret { width: 9px; height: 9px; transition: transform .15s; flex-shrink: 0; }
+.tree-archived-head .caret svg { width: 9px; height: 9px; display: block; }
+.tree-archived-head.open .caret { transform: rotate(90deg); }
+.tree-archived-head .ah-title { letter-spacing: .5px; }
+.tree-archived-head .ah-count { margin-left: auto; font-family: var(--mono); font-size: 10px; }
+.tree-session.archived { opacity: .55; }
+/* 内联重命名输入框（替换名字 span） */
+.inline-rename {
+  width: 100%; min-width: 0; background: transparent; border: 1px solid var(--border);
+  border-radius: 5px; color: var(--text); font: inherit; font-size: 12.5px; line-height: 1.5;
+  padding: 1px 5px; outline: none;
+}
+.inline-rename:focus { border-color: var(--accent); }
+/* 三点菜单容器（选项复用 .cb-opt 样式；fixed 定位，避免被侧栏裁剪） */
+.ctx-menu {
+  position: fixed; z-index: 200; min-width: 148px; padding: 5px;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 12px;
+  box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 2px;
+  animation: fadeUp .14s ease;
+}
+.ctx-menu[hidden] { display: none; }
+.ctx-menu .cb-opt.danger { background: transparent; color: var(--danger); }
+.ctx-menu .cb-opt.danger:hover { background: var(--accent-soft); color: var(--danger); }
+/* 二次确认态：填充红底，提示再点一次才执行 */
+.ctx-menu .cb-opt.armed, .ctx-menu .cb-opt.armed:hover { background: var(--danger); color: #fff; }
+
+/* ---------- 侧边栏滚动条：与对话区 #chat-scroll 同款细滚动条 ---------- */
+/* 左侧栏 + 右侧栏（文件树 / 任务区 / 详情面板）统一；slate 半透明在深浅主题下都成立 */
+.sidebar-scroll, .panel-body, .tr-body, .sd-body, .td-out, .file-view-content {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(148, 163, 184, .25) transparent;
+}
+.sidebar-scroll::-webkit-scrollbar, .panel-body::-webkit-scrollbar, .tr-body::-webkit-scrollbar,
+.sd-body::-webkit-scrollbar, .td-out::-webkit-scrollbar, .file-view-content::-webkit-scrollbar {
+  width: 8px; height: 8px;
+}
+.sidebar-scroll::-webkit-scrollbar-track, .panel-body::-webkit-scrollbar-track, .tr-body::-webkit-scrollbar-track,
+.sd-body::-webkit-scrollbar-track, .td-out::-webkit-scrollbar-track, .file-view-content::-webkit-scrollbar-track {
+  background: transparent;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb, .panel-body::-webkit-scrollbar-thumb, .tr-body::-webkit-scrollbar-thumb,
+.sd-body::-webkit-scrollbar-thumb, .td-out::-webkit-scrollbar-thumb, .file-view-content::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, .18); border-radius: 6px;
+}
+.sidebar-scroll::-webkit-scrollbar-thumb:hover, .panel-body::-webkit-scrollbar-thumb:hover, .tr-body::-webkit-scrollbar-thumb:hover,
+.sd-body::-webkit-scrollbar-thumb:hover, .td-out::-webkit-scrollbar-thumb:hover, .file-view-content::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, .32);
+}
+/* 对话区滚动条补上同款 hover 反馈，行为一致 */
+#chat-scroll::-webkit-scrollbar-thumb:hover { background: rgba(148, 163, 184, .32); }
+#chat-scroll { scrollbar-width: thin; scrollbar-color: rgba(148, 163, 184, .25) transparent; }

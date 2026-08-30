@@ -126,6 +126,8 @@ const ICON = {
   check: '<svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M20 6L9 17l-5-5"/></svg>',
   checkCircle: '<svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z"/><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M8.5 12l2.5 2.5 4.5-4.5"/></svg>',
   warn: '<svg viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M12 3L2 20h20L12 3z"/><path stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 10v4M12 17h.01"/></svg>',
+  dots: '<svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="19" cy="12" r="1.8"/></svg>',
+  pin: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 3h6l-1 7 3 2.5V15H7v-2.5L10 10z"/></svg>',
 };
 function ic(name, cls) { return '<span class="ic ' + (cls || "svg14") + '">' + ICON[name] + "</span>"; }
 function addIconNote(icon, text, cls, parent, scroll) {
@@ -718,6 +720,138 @@ function renderSubagent(subId, ev) {
 
 /* ---------- 侧边栏工作区 / 会话树 ---------- */
 let dataLoadedOnce = false;
+const archivedOpen = new Set();  // 已归档折叠区的展开状态（按工作区 root）
+async function postJSON(url, body) {
+  const r = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  return r.json();
+}
+
+/* ---------- 树节点三点菜单（工作区 / 会话共用，视觉与权限下拉一致） ---------- */
+const ctxMenu = document.getElementById("ctx-menu");
+function closeCtxMenu() { if (ctxMenu) ctxMenu.hidden = true; }
+function openCtxMenu(items, anchor) {
+  ctxMenu.innerHTML = "";
+  for (const it of items) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "cb-opt" + (it.danger ? " danger" : "");
+    b.textContent = it.label;
+    b.addEventListener("click", e => {
+      e.stopPropagation();
+      if (it.confirm && !b.dataset.armed) {
+        b.dataset.armed = "1";  // 危险操作二次确认：再点一次才执行
+        b.textContent = it.confirm;
+        b.classList.add("armed");
+        return;
+      }
+      closeCtxMenu();
+      if (it.onClick) it.onClick();
+    });
+    ctxMenu.appendChild(b);
+  }
+  ctxMenu.hidden = false;
+  // 定位：锚点下方右对齐；放不下则翻转到上方
+  const r = anchor.getBoundingClientRect();
+  const mw = ctxMenu.offsetWidth, mh = ctxMenu.offsetHeight;
+  let top = r.bottom + 6;
+  if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 6);
+  let left = Math.max(8, r.right - mw);
+  if (left + mw > window.innerWidth - 8) left = Math.max(8, window.innerWidth - mw - 8);
+  ctxMenu.style.top = top + "px";
+  ctxMenu.style.left = left + "px";
+}
+document.addEventListener("mousedown", e => { if (ctxMenu && !ctxMenu.hidden && !ctxMenu.contains(e.target)) closeCtxMenu(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && ctxMenu && !ctxMenu.hidden) closeCtxMenu(); });
+window.addEventListener("blur", closeCtxMenu);
+
+/* ---------- 内联重命名（工作区 / 会话共用）：Enter 提交，Esc / 失焦取消 ---------- */
+function beginInlineEdit(nameEl, current, onCommit) {
+  const inp = document.createElement("input");
+  inp.className = "inline-rename";
+  inp.value = current;
+  let finished = false;
+  const done = commit => {
+    if (finished) return;
+    finished = true;
+    const v = inp.value.trim();
+    if (commit && v && v !== current) onCommit(v);
+    else nameEl.textContent = current;
+  };
+  nameEl.textContent = "";
+  nameEl.appendChild(inp);
+  inp.focus();
+  inp.select();
+  inp.addEventListener("keydown", e => {
+    e.stopPropagation();
+    if (e.key === "Enter") { e.preventDefault(); done(true); }
+    else if (e.key === "Escape") done(false);
+  });
+  inp.addEventListener("blur", () => done(false));
+  inp.addEventListener("click", e => e.stopPropagation());
+}
+
+/* ---------- 工作区 / 会话管理操作 ---------- */
+async function renameWorkspace(ws, name) {
+  const d = await postJSON("/api/workspace/rename", { path: ws.root, name });
+  if (d.ok) loadTree(); else addSystem("⚠ " + (d.message || "重命名失败"), "error");
+}
+async function deleteWorkspace(ws) {
+  const d = await postJSON("/api/workspace/delete", { path: ws.root });
+  if (d.ok) { dataLoadedOnce = false; loadTree(); }  // 可能切回默认工作区，重放当前会话
+  else addSystem("⚠ " + (d.message || "删除失败"), "error");
+}
+async function renameSession(ws, s, name) {
+  const d = await postJSON("/api/session/rename", { root: ws.root, filename: s.filename, name });
+  if (d.ok) loadTree(); else { addSystem("⚠ " + (d.message || "重命名失败"), "error"); loadTree(); }
+}
+async function flagSession(url, ws, s, v) {
+  const key = url.endsWith("/pin") ? "pinned" : "archived";
+  const d = await postJSON(url, { root: ws.root, filename: s.filename, [key]: v });
+  if (!d.ok) addSystem("⚠ " + (d.message || "操作失败"), "error");
+  loadTree();
+}
+
+/* 会话行：名字 +（置顶标识）+ 相对时间，悬浮时时间让位给三点菜单按钮 */
+function makeSessionRow(ws, s) {
+  const se = document.createElement("div");
+  se.className = "tree-session" + ((ws.is_active && s.filename === ws.active) ? " active" : "") + (s.archived ? " archived" : "");
+  const name = document.createElement("span");
+  name.className = "session-name";
+  name.textContent = s.name;
+  se.appendChild(name);
+  if (s.pinned) {
+    const pin = document.createElement("span");
+    pin.className = "session-pin";
+    pin.title = "已置顶";
+    pin.innerHTML = ICON.pin;
+    se.appendChild(pin);
+  }
+  const time = document.createElement("span");
+  time.className = "session-time";
+  time.textContent = s.mtime ? timeAgo(s.mtime * 1000) : "";
+  se.appendChild(time);
+  const gear = document.createElement("button");
+  gear.type = "button";
+  gear.className = "session-gear";
+  gear.title = "会话选项";
+  gear.innerHTML = ICON.dots;
+  gear.addEventListener("click", e => {
+    e.stopPropagation();
+    const items = [{ label: "重命名", onClick: () => beginInlineEdit(name, s.name, v => renameSession(ws, s, v)) }];
+    if (!s.archived) {
+      items.push({ label: s.pinned ? "取消置顶" : "置顶", onClick: () => flagSession("/api/session/pin", ws, s, !s.pinned) });
+      items.push({ label: "归档", onClick: () => flagSession("/api/session/archive", ws, s, true) });
+    } else {
+      items.push({ label: "取消归档", onClick: () => flagSession("/api/session/archive", ws, s, false) });
+    }
+    openCtxMenu(items, gear);
+  });
+  se.appendChild(gear);
+  se.title = s.filename;
+  se.addEventListener("click", () => selectSession(ws.root, s.filename));
+  return se;
+}
+
 async function loadTree() {
   try {
     const list = await getJSON("/api/workspaces");
@@ -733,7 +867,9 @@ async function loadTree() {
         '<span class="caret">' + ICON.chevron + "</span>" +
         '<span class="ws-ic">' + ICON.folder + "</span>" +
         '<span class="ws-name">' + esc(ws.name) + "</span>" +
-        '<button class="ws-add" title="新建会话">' + ICON.plus + "</button>";
+        '<button type="button" class="ws-gear" title="工作区选项">' + ICON.dots + "</button>" +
+        '<button type="button" class="ws-add" title="新建会话">' + ICON.plus + "</button>";
+      const wsNameEl = header.querySelector(".ws-name");
       header.addEventListener("click", () => {
         const o = expandedRoots.has(ws.root);
         if (o) expandedRoots.delete(ws.root); else expandedRoots.add(ws.root);
@@ -744,29 +880,43 @@ async function loadTree() {
         e.stopPropagation();
         newSessionInWorkspace(ws.root);
       });
+      header.querySelector(".ws-gear").addEventListener("click", e => {
+        e.stopPropagation();
+        openCtxMenu([
+          { label: "重命名", onClick: () => beginInlineEdit(wsNameEl, ws.name, v => renameWorkspace(ws, v)) },
+          { label: "删除工作区", danger: true, confirm: "确认删除？", onClick: () => deleteWorkspace(ws) },
+        ], e.currentTarget);
+      });
       const sessionsEl = document.createElement("div");
       sessionsEl.className = "tree-sessions";
       sessionsEl.style.display = open ? "block" : "none";
-      if (ws.sessions.length === 0) {
+      const sessions = ws.sessions || [];
+      const live = sessions.filter(s => !s.archived);
+      const archived = sessions.filter(s => s.archived);
+      if (live.length === 0) {
         const empty = document.createElement("div");
         empty.className = "tree-empty";
         empty.textContent = "无会话";
         sessionsEl.appendChild(empty);
       }
-      for (const s of ws.sessions) {
-        const se = document.createElement("div");
-        se.className = "tree-session" + ((ws.is_active && s.filename === ws.active) ? " active" : "");
-        const name = document.createElement("span");
-        name.className = "session-name";
-        name.textContent = s.name;
-        se.appendChild(name);
-        const time = document.createElement("span");
-        time.className = "session-time";
-        time.textContent = s.mtime ? timeAgo(s.mtime * 1000) : "";
-        se.appendChild(time);
-        se.title = s.filename;
-        se.addEventListener("click", () => selectSession(ws.root, s.filename));
-        sessionsEl.appendChild(se);
+      for (const s of live) sessionsEl.appendChild(makeSessionRow(ws, s));
+      if (archived.length) {
+        // 归档区：默认折叠，点击标题展开 / 收起
+        const head = document.createElement("div");
+        head.className = "tree-archived-head" + (archivedOpen.has(ws.root) ? " open" : "");
+        head.innerHTML = '<span class="caret">' + ICON.chevron + '</span><span class="ah-title">已归档</span><span class="ah-count">' + archived.length + "</span>";
+        const archivedEl = document.createElement("div");
+        archivedEl.className = "tree-archived";
+        archivedEl.style.display = archivedOpen.has(ws.root) ? "block" : "none";
+        head.addEventListener("click", () => {
+          const o = archivedOpen.has(ws.root);
+          if (o) archivedOpen.delete(ws.root); else archivedOpen.add(ws.root);
+          head.classList.toggle("open", !o);
+          archivedEl.style.display = !o ? "block" : "none";
+        });
+        for (const s of archived) archivedEl.appendChild(makeSessionRow(ws, s));
+        sessionsEl.appendChild(head);
+        sessionsEl.appendChild(archivedEl);
       }
       group.appendChild(header); group.appendChild(sessionsEl);
       tree.appendChild(group);

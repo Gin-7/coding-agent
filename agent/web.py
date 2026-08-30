@@ -9,6 +9,7 @@
 import json
 import os
 import queue
+import secrets
 import string
 import threading
 import time
@@ -58,11 +59,14 @@ class EventHub:
 
 
 class SessionRecord:
-    """工作区内的一个会话：文件名、名字（首轮决定）、消息历史、写入句柄。"""
+    """工作区内的一个会话：文件名、名字（首轮决定或手动重命名）、消息历史、写入句柄。"""
 
     def __init__(self, filename: str):
         self.filename = filename
         self.name = "新会话"
+        self.pinned = False
+        self.archived = False
+        self.renamed = False  # 用户手动改过名后，首轮对话不再自动覆盖会话名
         self.messages = None  # None 表示尚未从文件加载
         self.writer = None
         self.mtime = 0.0
@@ -72,8 +76,9 @@ class SessionRecord:
 
 
 class Workspace:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, display_name: str = None):
         self.root = Path(root).resolve()
+        self.display_name = display_name
         self.sessions_dir = self.root / SESSIONS_DIR_NAME
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.session_map: dict = {}
@@ -86,7 +91,7 @@ class Workspace:
             if f.name not in self.session_map:
                 rec = SessionRecord(f.name)
                 rec.mtime = f.stat().st_mtime
-                _load_session_name(rec, f)
+                _load_session_meta(rec, f)
                 self.session_map[f.name] = rec
         if not self.session_map:
             self.new_session()
@@ -96,7 +101,12 @@ class Workspace:
                 self.session_map, key=lambda k: self.session_map[k].mtime, reverse=True)))
 
     def new_session(self) -> SessionRecord:
-        filename = f"session-{_dt.datetime.now().strftime('%Y%m%d-%H%M%S')}.jsonl"
+        base = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+        filename = f"session-{base}.jsonl"
+        # 同秒重名保护：文件名只精确到秒，快速连建两个会话会撞名（两份历史交错进同一文件），
+        # 已存在时追加 4 位随机后缀；glob 仍为 session-*.jsonl，对扫描/恢复透明
+        while filename in self.session_map or (self.sessions_dir / filename).exists():
+            filename = f"session-{base}-{secrets.token_hex(2)}.jsonl"
         rec = SessionRecord(filename)
         rec.mtime = time.time()
         self.session_map[filename] = rec
@@ -110,26 +120,38 @@ class Workspace:
         return self.session_map.get(self.active_filename)
 
     def list_sessions(self):
-        recs = self.session_map.values()
-        return sorted(recs, key=lambda r: r.mtime, reverse=True)
+        """置顶优先、归档垫底，其余按最近活动倒序（侧边栏展示顺序）。"""
+        recs = list(self.session_map.values())
+        recs.sort(key=lambda r: (r.archived, not r.pinned, -r.mtime))
+        return recs
 
 
-def _load_session_name(rec: SessionRecord, path: Path) -> None:
-    """从会话文件推导名字：优先 SessionMeta，否则取第一条 UserMessage。"""
+def _load_session_meta(rec: SessionRecord, path: Path) -> None:
+    """从会话文件恢复元数据：最后一条 SessionMeta 生效（重命名/置顶/归档为追加快照），
+    无 SessionMeta 时回退第一条 UserMessage 作为名字。"""
+    first_user = None
+    meta = None
     try:
         for line in path.read_text(encoding="utf-8").splitlines():
             try:
                 obj = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            if obj.get("type") == "SessionMeta" and obj.get("name"):
-                rec.name = obj["name"]
-                return
-            if obj.get("type") == "UserMessage":
-                rec.name = obj.get("content", "新会话")[:MAX_SESSION_NAME]
-                return
+            t = obj.get("type")
+            if t == "SessionMeta" and (obj.get("name") or "pinned" in obj or "archived" in obj):
+                meta = obj
+            elif t == "UserMessage" and first_user is None:
+                first_user = obj.get("content")
     except OSError:
         pass
+    if meta is not None:
+        if meta.get("name"):
+            rec.name = meta["name"]
+            rec.renamed = True
+        rec.pinned = bool(meta.get("pinned"))
+        rec.archived = bool(meta.get("archived"))
+    elif first_user:
+        rec.name = first_user[:MAX_SESSION_NAME]
 
 
 def load_messages_for_session(path: Path):
@@ -149,6 +171,7 @@ class WebAgentServer:
         self.budget_resolver = None
         self.window_resolver = None
         self.workspaces = {str(workspace.root): workspace}
+        self._workspace_names = {}
         self.run_thread = None
         self.interrupt_event = threading.Event()
         self._pending_confirm = None
@@ -164,12 +187,15 @@ class WebAgentServer:
 
     def _load_registry(self):
         p = self._registry_path()
-        paths = []
+        paths, names = [], {}
         if p.exists():
             try:
-                paths = json.loads(p.read_text(encoding="utf-8")).get("workspaces", [])
+                data = json.loads(p.read_text(encoding="utf-8"))
+                paths = data.get("workspaces", [])
+                names = data.get("names", {}) or {}
             except (json.JSONDecodeError, OSError):
                 paths = []
+        self._workspace_names = {str(Path(k).resolve()): v for k, v in (names or {}).items()}
         if str(self.default_root) not in paths:
             paths.insert(0, str(self.default_root))
         seen = set()
@@ -182,7 +208,7 @@ class WebAgentServer:
                 continue
             if Path(raw).is_dir():
                 try:
-                    self.workspaces[key] = Workspace(Path(raw))
+                    self.workspaces[key] = Workspace(Path(raw), display_name=names.get(key))
                 except OSError:
                     pass
 
@@ -194,9 +220,13 @@ class WebAgentServer:
             if x not in seen:
                 seen.add(x)
                 out.append(x)
+        # 显示名别名：仅记录与文件夹名不同的（文件夹名本身不入库，目录改名后自动跟随）
+        names = {str(w.root): w.display_name for w in self.workspaces.values()
+                 if w.display_name and w.display_name != (w.root.name or str(w.root))}
         try:
             self._registry_path().write_text(
-                json.dumps({"workspaces": out}, ensure_ascii=False, indent=2), encoding="utf-8")
+                json.dumps({"workspaces": out, "names": names}, ensure_ascii=False, indent=2),
+                encoding="utf-8")
         except OSError:
             pass
 
@@ -330,13 +360,10 @@ class WebAgentServer:
         for key, ws in self.workspaces.items():
             result.append({
                 "root": str(ws.root),
-                "name": ws.root.name or str(ws.root),
+                "name": ws.display_name or ws.root.name or str(ws.root),
                 "is_active": ws is self.workspace,
                 "active": ws.active_filename,
-                "sessions": [
-                    {"filename": r.filename, "name": r.name, "mtime": r.mtime}
-                    for r in ws.list_sessions()
-                ],
+                "sessions": self._session_dicts(ws),
             })
         return result
 
@@ -352,6 +379,8 @@ class WebAgentServer:
     # ---------- 工作区 ----------
 
     def select_workspace(self, path: str):
+        if not (path or "").strip():
+            return False, "路径不能为空"
         p = Path(path).resolve()
         if not p.is_dir():
             return False, "不是有效目录"
@@ -364,16 +393,57 @@ class WebAgentServer:
         self._save_registry()
         return True, str(p)
 
+    def _session_dicts(self, ws: Workspace) -> list:
+        return [
+            {"filename": r.filename, "name": r.name, "mtime": r.mtime,
+             "pinned": r.pinned, "archived": r.archived}
+            for r in ws.list_sessions()
+        ]
+
     def workspace_meta(self) -> dict:
         ws = self.workspace
         return {
             "root": str(ws.root),
-            "sessions": [
-                {"filename": r.filename, "name": r.name, "mtime": r.mtime}
-                for r in ws.list_sessions()
-            ],
+            "sessions": self._session_dicts(ws),
             "active": ws.active_filename,
         }
+
+    def rename_workspace(self, path: str, name: str):
+        """改工作区显示名（别名持久化到注册表；不动磁盘上的真实文件夹）。"""
+        p = Path(path).resolve()
+        ws = self.workspaces.get(str(p))
+        if ws is None:
+            return False, "工作区不存在"
+        name = (name or "").strip()
+        if not name:
+            return False, "名称不能为空"
+        name = name[:40]
+        if name == (ws.root.name or str(ws.root)):
+            self._workspace_names.pop(str(p), None)  # 改回文件夹名 = 清除别名
+        else:
+            self._workspace_names[str(p)] = name
+        ws.display_name = None if name == (ws.root.name or str(ws.root)) else name
+        self._save_registry()
+        return True, ws.display_name or ws.root.name or str(ws.root)
+
+    def remove_workspace(self, path: str):
+        """把工作区从侧边栏移除（仅移出注册表，不删除磁盘文件）。"""
+        p = Path(path).resolve()
+        key = str(p)
+        if key == str(self.default_root):
+            return False, "服务启动目录所在的工作区无法移除"
+        ws = self.workspaces.pop(key, None)
+        if ws is None:
+            return False, "工作区不存在"
+        self._workspace_names.pop(key, None)
+        switched = False
+        if ws is self.workspace:
+            # 移除的是当前工作区：切回启动目录的最近会话
+            self.workspace = self.workspaces[str(self.default_root)]
+            self._activate(self.workspace.get_active())
+            switched = True
+        self._save_registry()
+        return True, switched
 
     # ---------- 会话 ----------
 
@@ -394,7 +464,7 @@ class WebAgentServer:
             path = rec.path(self.workspace.sessions_dir)
             msgs = load_messages_for_session(path) if path.exists() else None
             rec.messages = msgs or self._fresh_messages()
-        rec.writer = self._open_writer(rec)
+        # 写入句柄惰性打开：激活即建文件会让从未使用的会话留下永久 0 字节 JSONL
         ctx = Context(self.system_prompt, self.budget, budget_resolver=self.budget_resolver,
                       window_resolver=self.window_resolver)
         ctx.messages = list(rec.messages)
@@ -434,10 +504,74 @@ class WebAgentServer:
         self._activate(rec)
         return True, rec.name
 
+    # ---------- 会话元数据（重命名 / 置顶 / 归档，追加 SessionMeta 快照持久化） ----------
+
+    def _find_session(self, root: str, filename: str):
+        """按工作区路径定位会话；root 为空时用当前工作区。返回 (workspace, record)。"""
+        if root:
+            ws = self.workspaces.get(str(Path(root).resolve()))
+            if ws is None:
+                return None, None
+        else:
+            ws = self.workspace
+        return ws, ws.get(filename or "")
+
+    def _persist_session_meta(self, ws: Workspace, rec: SessionRecord) -> None:
+        """把会话元数据以最后一条 SessionMeta 快照的形式追加进 JSONL（O_APPEND 与运行中的写入互不冲突）。"""
+        path = rec.path(ws.sessions_dir)
+        try:
+            with path.open("a", encoding="utf-8") as f:
+                f.write(json.dumps({"type": "SessionMeta", "name": rec.name,
+                                    "pinned": rec.pinned, "archived": rec.archived},
+                                   ensure_ascii=False) + "\n")
+        except OSError:
+            pass
+
+    def _guard_active_session(self, ws, rec) -> str:
+        """运行中禁止改动正在执行的活跃会话（其写入句柄正被逐行使用）。"""
+        if self.is_running() and ws is self.workspace and rec.filename == ws.active_filename:
+            return "任务执行中无法修改该会话"
+        return ""
+
+    def rename_session(self, root: str, filename: str, name: str):
+        ws, rec = self._find_session(root, filename)
+        if ws is None or rec is None:
+            return False, "会话不存在"
+        name = (name or "").strip()
+        if not name:
+            return False, "名称不能为空"
+        guard = self._guard_active_session(ws, rec)
+        if guard:
+            return False, guard
+        rec.name = name[:60]
+        rec.renamed = True
+        self._persist_session_meta(ws, rec)
+        self.hub.broadcast({"type": "SessionsChanged"})
+        return True, rec.name
+
+    def set_session_flags(self, root: str, filename: str, pinned: bool = None, archived: bool = None):
+        ws, rec = self._find_session(root, filename)
+        if ws is None or rec is None:
+            return False, "会话不存在"
+        guard = self._guard_active_session(ws, rec)
+        if guard:
+            return False, guard
+        if pinned is not None:
+            rec.pinned = bool(pinned)
+        if archived is not None:
+            rec.archived = bool(archived)
+        if rec.archived:
+            rec.pinned = False  # 归档会话不参与置顶排序
+        self._persist_session_meta(ws, rec)
+        self.hub.broadcast({"type": "SessionsChanged"})
+        return True, ""
+
     def new_session_in(self, path: str):
         """在指定工作区新建会话（必要时先切换工作区）。"""
         if self.is_running():
             return False, "任务执行中无法新建会话"
+        if not (path or "").strip():
+            return False, "路径不能为空"  # 空 path 会 resolve 成 CWD，静默在当前工作区建会话
         cur = str(self.workspace.root).replace("\\", "/").rstrip("/")
         target = str(Path(path).resolve()).replace("\\", "/").rstrip("/")
         if cur != target:
@@ -489,11 +623,12 @@ class WebAgentServer:
             return False, "请先新建或选择一个会话"
         if rec.writer is None:
             rec.writer = self._open_writer(rec)
-        # 首轮对话决定会话名
-        if rec.name == "新会话" or (rec.messages and len(rec.messages) <= 1):
+        # 首轮对话决定会话名（用户手动改过名的会话不覆盖）
+        if not rec.renamed and (rec.name == "新会话" or (rec.messages and len(rec.messages) <= 1)):
             rec.name = task[:MAX_SESSION_NAME]
             if rec.writer:
-                rec.writer.log({"type": "SessionMeta", "name": rec.name})
+                rec.writer.log({"type": "SessionMeta", "name": rec.name,
+                                "pinned": rec.pinned, "archived": rec.archived})
         if rec.writer:
             rec.writer.log({"type": "UserMessage", "content": task})
         rec.mtime = time.time()
@@ -808,6 +943,27 @@ def build_handler(server: WebAgentServer):
                     self._json({"ok": True, "workspace": server.workspace_meta()})
                 else:
                     self._json({"ok": False, "message": msg}, 400)
+            elif path == "/api/workspace/rename":
+                ok, msg = server.rename_workspace(body.get("path", ""), body.get("name", ""))
+                self._json({"ok": ok, "name": msg} if ok else {"ok": False, "message": msg},
+                           200 if ok else 400)
+            elif path == "/api/workspace/delete":
+                ok, msg = server.remove_workspace(body.get("path", ""))
+                self._json({"ok": ok, "switched": msg} if ok else {"ok": False, "message": msg},
+                           200 if ok else 400)
+            elif path == "/api/session/rename":
+                ok, msg = server.rename_session(body.get("root", ""), body.get("filename", ""),
+                                                body.get("name", ""))
+                self._json({"ok": ok, "name": msg} if ok else {"ok": False, "message": msg},
+                           200 if ok else 400)
+            elif path == "/api/session/pin":
+                ok, msg = server.set_session_flags(body.get("root", ""), body.get("filename", ""),
+                                                   pinned=bool(body.get("pinned")))
+                self._json({"ok": ok} if ok else {"ok": False, "message": msg}, 200 if ok else 400)
+            elif path == "/api/session/archive":
+                ok, msg = server.set_session_flags(body.get("root", ""), body.get("filename", ""),
+                                                   archived=bool(body.get("archived")))
+                self._json({"ok": ok} if ok else {"ok": False, "message": msg}, 200 if ok else 400)
             else:
                 self.send_error(404)
 
