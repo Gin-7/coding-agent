@@ -25,14 +25,19 @@ def resolve_workspace_path(workspace: Path, path: str) -> Path:
     return p
 
 
-def ensure_safe_file(p: Path, path: str) -> None:
-    """敏感路径保护：.env 系列（凭据）与 .coding-agent/（agent 自身状态）不允许读写。
+def ensure_safe_file(workspace: Path, p: Path, path: str) -> None:
+    """敏感路径保护：.env 系列（凭据）不允许读写；agent 状态目录仅允许写工作区记忆文件。
 
-    唯一例外：.coding-agent/.agent-memory.md 是跨会话工作区记忆，agent 可写。
+    状态目录判断以工作区自身为界（相对工作区的第一段）——沙箱等工作区可能恰好
+    位于某个名为 .coding-agent 的祖先目录之下，不能把祖先误判为状态目录
+    （回归：曾导致沙箱内一切读写被拒，agent 被逼用命令行转义写文件）。
     """
     if p.name.startswith(".env"):
         raise PathError(f"凭据文件受保护，不允许访问：{path}")
-    if STATE_DIR_NAME in p.parts:
-        i = p.parts.index(STATE_DIR_NAME)
-        if not (len(p.parts) == i + 2 and p.parts[i + 1] == ".agent-memory.md"):
+    try:
+        rel = p.relative_to(Path(workspace).resolve())
+    except ValueError:
+        return  # 越界由 resolve_workspace_path 负责
+    if rel.parts and rel.parts[0] == STATE_DIR_NAME:
+        if not (len(rel.parts) == 2 and rel.parts[1] == ".agent-memory.md"):
             raise PathError(f"agent 状态目录受保护，不允许访问：{path}")

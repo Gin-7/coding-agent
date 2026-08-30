@@ -206,6 +206,33 @@ def test_credentials_protected(tmp):
     assert r["ok"], r["output"]
 
 
+def test_state_dir_block_workspace_scoped(tmp):
+    """回归：状态目录保护只看工作区自身，不得误伤嵌套在 .coding-agent 下的沙箱工作区。
+
+    曾因用 'STATE_DIR_NAME in p.parts' 判断，首启沙箱（<repo>/.coding-agent/default-workspace）
+    内一切读写与 list_dir 都被拒，agent 被逼用命令行转义写文件，50 步跑满。
+    """
+    from agent.tools import ToolContext, dispatch, register_all
+    register_all()
+    nested = tmp / "repo" / ".coding-agent" / "default-workspace"
+    nested.mkdir(parents=True)
+    (nested / ".coding-agent").mkdir()  # 该工作区自己的状态目录
+    ctx = ToolContext(nested)
+
+    r = dispatch("write_file", {"path": "products.json", "content": '[{"id": 1}]'}, ctx)
+    assert r["ok"], r["output"]
+    r = dispatch("read_file", {"path": "products.json"}, ctx)
+    assert r["ok"] and '"id": 1' in r["output"].replace(" ", '" id": 1') or "1" in r["output"]
+    assert dispatch("list_dir", {"path": "."}, ctx)["ok"]
+
+    # 自身状态目录仍然封闭（记忆文件例外）
+    assert not dispatch("write_file", {"path": ".coding-agent/sessions/x.jsonl", "content": "x"}, ctx)["ok"]
+    assert not dispatch("read_file", {"path": ".coding-agent/sessions/x.jsonl"}, ctx)["ok"]
+    assert not dispatch("list_dir", {"path": ".coding-agent"}, ctx)["ok"]
+    r = dispatch("write_file", {"path": ".coding-agent/.agent-memory.md", "content": "# 记忆\n"}, ctx)
+    assert r["ok"], r["output"]
+
+
 def test_git_tools(tmp):
     from agent.tools import ToolContext, dispatch, register_all
     register_all()

@@ -19,7 +19,11 @@ SEARCH_SKIP_FILES = {".env", ".gitignore"}
 
 def tool_list_dir(tool_ctx, path: str = ".") -> str:
     p = resolve_workspace_path(tool_ctx.workspace, path or ".")
-    if STATE_DIR_NAME in p.parts:
+    try:
+        rel = p.relative_to(tool_ctx.workspace)
+    except ValueError:
+        rel = None
+    if rel is not None and rel.parts and rel.parts[0] == STATE_DIR_NAME:
         raise PathError(f"agent 状态目录受保护，不允许访问：{path}")
     if not p.is_dir():
         return f"目录不存在: {path}"

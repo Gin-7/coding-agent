@@ -55,7 +55,7 @@ def prepare_state_dir(workspace: Path) -> Path:
     sessions/、.env、.agent-backups/、.agent-memory.md。
     """
     state = state_dir(workspace)
-    state.mkdir(exist_ok=True)
+    state.mkdir(parents=True, exist_ok=True)
 
     def move_file(name: str, force_over_empty: bool = False) -> None:
         legacy = workspace / name

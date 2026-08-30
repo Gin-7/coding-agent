@@ -64,7 +64,7 @@ def tool_read_file(tool_ctx, path: str, offset: int = 1, limit: int = MAX_READ_L
         return "offset 必须 >= 1"
     limit = max(1, min(int(limit), MAX_READ_LINES))
     p = resolve_workspace_path(tool_ctx.workspace, path)
-    ensure_safe_file(p, path)
+    ensure_safe_file(tool_ctx.workspace, p, path)
     if not p.is_file():
         return f"文件不存在: {path}"
     text = _read_text(p)
@@ -86,7 +86,7 @@ def tool_read_file(tool_ctx, path: str, offset: int = 1, limit: int = MAX_READ_L
 
 def tool_write_file(tool_ctx, path: str, content: str) -> str:
     p = resolve_workspace_path(tool_ctx.workspace, path)
-    ensure_safe_file(p, path)
+    ensure_safe_file(tool_ctx.workspace, p, path)
     if p.exists() and p.is_dir():
         return f"目标是目录，无法写入: {path}"
     _backup(tool_ctx, p)
@@ -105,7 +105,7 @@ def _unique_old(text: str, old: str):
 
 def tool_edit_file(tool_ctx, path: str, old: str, new: str) -> str:
     p = resolve_workspace_path(tool_ctx.workspace, path)
-    ensure_safe_file(p, path)
+    ensure_safe_file(tool_ctx.workspace, p, path)
     if not p.is_file():
         return f"文件不存在: {path}"
     text, newline = _read_raw(p)
@@ -130,7 +130,7 @@ def tool_edit_file(tool_ctx, path: str, old: str, new: str) -> str:
 def tool_undo_file(tool_ctx, path: str) -> str:
     """从 .agent-backups 恢复该文件最近一次修改前的版本。"""
     p = resolve_workspace_path(tool_ctx.workspace, path)
-    ensure_safe_file(p, path)
+    ensure_safe_file(tool_ctx.workspace, p, path)
     try:
         rel = p.relative_to(tool_ctx.workspace)
     except ValueError:
