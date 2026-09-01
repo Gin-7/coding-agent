@@ -536,6 +536,12 @@ function render(ev, opts) {
     // 子 agent：聊天区只留轻注记，运行态/对话在右侧栏列表 + 预览面板承载
     case "SubagentStarted": {
       addSubRow(ev);
+      // 回放兜底：prompt 仅存在于 SubagentStarted，未进 subEvents 内层事件流。
+      // 合成一条 UserMessage 写入缓存，使 server 重启后重开详情也能渲染出开头的用户气泡，
+      // 与实时（openSubDetail 用 sub.prompt 加气泡）视觉一致。实时路径不读此缓存，无重复。
+      if (replay && ev.prompt && subEvents.has(ev.subagent_id)) {
+        subEvents.get(ev.subagent_id).push({ type: "UserMessage", content: ev.prompt });
+      }
       if (!replay) addSystem("[子agent " + ev.subagent_id + "] " + (ev.name || ""), "", turn);
       break;
     }
