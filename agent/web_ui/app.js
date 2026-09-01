@@ -599,6 +599,27 @@ function replayEvents(events) {
   if (lastAssistant) lastAssistant.classList.remove("running");
   scrollEl.scrollTop = scrollEl.scrollHeight;   // 回放结束直接跳到底部（切换会话 / 初始加载均定位到最新消息）
   loadFiles();  // 仅刷新文件面板；会话树由调用方负责（避免递归触发再次回放）
+  reconcileStaleBackgroundTasks();  // 历史会话 / server 重启后，内存态已不含这些任务，修正"假运行中"
+}
+
+/* 回放后修正"假运行中"：后台任务 / 子agent 是各次 agent 运行的内存态。
+   打开历史会话或 server 重启后，这些进程早已不在，但日志若缺结束事件（进程被强杀/
+   会话中断），回放时卡片会停在 running。以 server 真实持有为准——不在内存即进程已不在。 */
+async function reconcileStaleBackgroundTasks() {
+  try {
+    const d = await getJSON("/api/background/tasks");
+    const live = new Set((d.tasks || []).map(t => t.task_id));
+    for (const [id, e] of bgRows) {
+      if (e.rawStatus === "running" && !live.has(id)) setBgStatus(id, "done", e.exit);
+    }
+  } catch (e) { /* 接口不可用不影响回放视图 */ }
+  try {
+    const d = await getJSON("/api/subagents");
+    const live = new Set((d.subagents || []).map(s => s.subagent_id));
+    for (const [id, e] of subRows) {
+      if (e.status.classList.contains("running") && !live.has(id)) setSubStatus(id, "done");
+    }
+  } catch (e) { }
 }
 
 /* ---------- 右栏任务区域（后台任务 / 子agent 列表 + 详情面板） ---------- */
@@ -707,8 +728,13 @@ async function openTaskDetail(id) {
   // 服务端重启后内存态丢失时的兜底：用本会话流式缓存渲染（命令/输出/状态来自回放事件）
   if (!task) {
     const c = bgRows.get(id);
-    if (c) task = { task_id: id, command: c.command, status: c.rawStatus || "done",
-                    exit_code: c.exit, output: c.output };
+    if (c) {
+      const raw = c.rawStatus || "done";
+      // 进 fallback 即说明 server 内存无此任务（历史会话 / server 重启），进程必不在；
+      // 日志若缺结束事件导致 raw=running，修正为 done，避免详情面板显示"运行中"。
+      const status = raw === "running" ? "done" : raw;
+      task = { task_id: id, command: c.command, status, exit_code: c.exit, output: c.output };
+    }
   }
   if (!task) return;
   document.getElementById("td-cmd").textContent = task.command || id;
