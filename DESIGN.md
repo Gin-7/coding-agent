@@ -36,7 +36,7 @@
 | 运行时模型 | DeepSeek（base_url/model 可配置） | 便宜、tool calling 强、支持流式；换模型零成本。**已实测 Qwen（DashScope OpenAI 兼容网关）跑通**，零改动 |
 | 权限模型 | 工作区内自动执行 + 危险命令黑名单 | 演示流畅，安全设计有层次 |
 | 上下文管理 | 双轨 token 计量 + compaction → 裁剪 → 硬截断 | 核心逻辑自研、可扩展 |
-| 前端形态 | 终端 CLI（事件流驱动渲染） | 无额外依赖，演示自然；为 Web UI 预留接口 |
+| 前端形态 | 终端 CLI + 浏览器 Web UI（事件流驱动渲染） | 零前端依赖：后端 `http.server` + SSE，前端纯 HTML/CSS/JS；CLI 与 Web 同为事件订阅者 |
 | 会话持久化 | JSONL 事件日志 | 可回放、可做回归测试、演示素材 |
 | 第三方依赖 | 仅 `requests` | 其余全标准库 |
 
@@ -103,26 +103,36 @@
 ```
 coding-agent/
 ├── agent/
-│   ├── __init__.py
+│   ├── __init__.py / __main__.py   # 入口（python -m agent）
 │   ├── cli.py          # 交互式 REPL + 一次性模式（双入口）
-│   ├── events.py       # 事件流数据结构定义
+│   ├── events.py       # 事件流数据结构定义（17 个 dataclass 事件）
 │   ├── renderer.py     # CLI 渲染器（ANSI 颜色、折叠、进度）
-│   ├── loop.py         # 主循环：迭代、终止、防空转
-│   ├── llm.py          # 自写 OpenAI 兼容客户端 + SSE 流式 + 重试
+│   ├── loop.py         # 主循环：迭代、终止、防空转、权限/计划模式
+│   ├── llm.py          # 自写 OpenAI 兼容客户端 + SSE 流式 + 错误分级 + 重试
 │   ├── context.py      # 历史管理 + 双轨 token 计量 + 裁剪/compaction/截断
-│   ├── parser.py       # tool_calls 校验 + 文本协议兜底
-│   ├── session.py      # JSONL 会话持久化
-│   ├── config.py       # 环境变量 / .env 配置加载
+│   ├── parser.py       # tool_calls 校验 + 文本协议兜底（两条路径统一）
+│   ├── compaction.py   # 上下文压缩（LLM 摘要 → 整轮裁剪 → 硬截断 三层）
+│   ├── session.py      # JSONL 会话持久化（可回放）
+│   ├── config.py       # 环境变量 / .env 配置加载（AGENT_MAX_CONTEXT_TOKENS 等）
 │   ├── prompts.py      # system prompt 模板
+│   ├── models.py       # 主流模型上下文窗口表（Web 热切换推导预算）
+│   ├── background.py   # 后台长命令管理（环形缓冲 / 读线程）
+│   ├── mock.py         # 无 API key 的演示模式
+│   ├── web.py          # Web UI 后端：SSE 事件总线 + 多工作区/会话 + 审批/中断
 │   └── tools/
-│       ├── __init__.py # 注册表：{name: (fn, json_schema)}
-│       ├── file_tools.py   # read_file / write_file / edit_file
-│       ├── search_tools.py # list_dir / search
-│       ├── shell_tools.py  # run_command
+│       ├── __init__.py # 注册表装配
+│       ├── registry.py / paths.py   # {name: (fn, json_schema)} + 路径锁
+│       ├── file_tools.py   # read_file / write_file / edit_file / undo_file
+│       ├── search_tools.py # list_dir / search / glob
+│       ├── shell_tools.py  # run_command（超时 / 黑名单 / 杀进程树）
+│       ├── git_tools.py    # git_status / diff / commit / log
+│       ├── background_tools.py  # start/list/poll/stop_background
+│       ├── subagent_tools.py    # spawn_subagent(s) / start/wait_subagents / list_batches
 │       └── meta_tools.py   # finish
-├── tests/              # 关键路径测试（parser / context / tools）
+├── agent/web_ui/       # 前端：index.html + app.js + style.css（零依赖）
+├── tests/              # 关键路径测试（7 模块，纯标准库，51 项）
 ├── DESIGN.md           # 本文档
-├── README.md           # 仓库说明与使用文档
+├── README.txt          # 仓库说明与使用文档
 └── requirements.txt    # requests
 ```
 
@@ -162,21 +172,24 @@ coding-agent/
 
 **注册表**：`{name: (callable, json_schema)}`，schema 直接作为 API `tools` 参数，工具即数据。
 
-**v1 工具集**：
+**工具集（注册表模式，共 22 个）**：schema 直接作为 API `tools` 参数，工具即数据。按能力分组：
 
-| 工具 | 说明 | 关键参数 |
+| 分组 | 工具 | 说明 |
 |---|---|---|
-| `read_file` | 读取文件，行号显示 | `path`, `offset?`, `limit?` |
-| `write_file` | 全覆盖写，UTF-8 显式编码 | `path`, `content` |
-| `edit_file` | 精确搜索-替换（省 token，改大文件） | `path`, `old`, `new` |
-| `undo_file` | 撤销最近一次修改（自动备份于 `.agent-backups/`） | `path` |
-| `list_dir` | 目录/文件浏览 | `path` |
-| `search` | 文本/正则搜索 | `pattern`, `path`, `regex?` |
-| `glob` | 按 glob 模式找文件（`**` 递归） | `pattern`, `path?` |
-| `run_command` | subprocess 执行 cmd，带超时 | `command`, `timeout?`, `workdir?` |
-| `git_status` / `git_diff` | 查看工作区改动 | `path?`, `staged?` |
-| `git_commit` / `git_log` | 提交 / 查看提交历史 | `message` / `n?` |
-| `finish` | 完成任务标记（携带总结） | `summary` |
+| 文件 | `read_file` | 读取文件（带行号，offset/limit 分页，≤30000 字符截断） |
+| 文件 | `write_file` | 整体覆盖写（UTF-8） |
+| 文件 | `edit_file` | 精确搜索-替换（改大文件局部，省 token） |
+| 文件 | `undo_file` | 撤销最近修改（从 `.agent-backups/` 恢复） |
+| 探索 | `list_dir` | 列目录/文件（含大小） |
+| 探索 | `search` | 递归搜索文件内容（子串/正则） |
+| 探索 | `glob` | glob 模式找文件（`**` 递归） |
+| 命令 | `run_command` | cmd 执行（默认 120s 超时、危险命令拦截、输出 3000 字符截断） |
+| Git | `git_status` / `git_diff` | 查看工作区改动 |
+| Git | `git_commit` / `git_log` | 提交 / 查看历史 |
+| 后台 | `start_background` / `list_background` / `poll_background` / `stop_background` | 后台长命令（dev server / 长构建 / 安装），环形缓冲实时输出 |
+| 子 agent | `spawn_subagent` / `spawn_subagents` | 同步运行 1 个 / 并行多个子 agent（线程并行） |
+| 子 agent | `start_subagents` / `wait_subagents` / `list_subagent_batches` | 异步启动批次 / 等结果 / 查批次状态 |
+| 元 | `finish` | 结束 agent 并给出总结（携带 summary） |
 
 **本地执行原则**：
 - 工具 = 普通 Python 函数直接调 OS API；`run_command` 用 `subprocess`（`CREATE_NEW_PROCESS_GROUP`）
@@ -202,8 +215,9 @@ coding-agent/
 2. 迭代数达上限（默认 30，可配）
 3. 用户 Ctrl+C → 优雅中断（把中断信息回喂模型，让它收敛后 finish）
 4. API 重试耗尽 → 报错退出
+5. 模型连续两轮无任何行动（空转）→ 视为任务卡死，报错退出（避免无限空转消耗 token）
 
-**防空转**：迭代过半仍未 finish → 注入提示"若任务已完成请调用 finish"，防止模型无限空转。
+**防空转**：迭代过半仍未 finish → 注入提示"若任务已完成请调用 finish"；同时做重复调用检测（同一命令连续失败多次则提示放弃辅助脚本），防止模型死在"反复修补自己的脚本"上。
 
 ### 4.6 错误处理（agent 能"自主"的关键）
 
@@ -212,11 +226,40 @@ coding-agent/
 - 命令超时 → `taskkill /T /F` 杀进程树（Windows 用 `CREATE_NEW_PROCESS_GROUP` + taskkill）
 - 编码：读文件先试 UTF-8 再 fallback GBK；cmd 输出 `errors='replace'` 解码
 
+### 4.7 Web UI（`web.py` + `web_ui/`）
+
+浏览器作为渲染器（零额外依赖：后端 `http.server` + SSE，前端纯 HTML/CSS/JS）：
+
+- **SSE 事件总线**：`web.py` 持有 `EventHub`，主循环 emit 的事件经总线广播到所有订阅的浏览器客户端；CLI / JSONL 日志是另外的订阅者，三者互不耦合
+- **多工作区 + 多会话**：左侧栏树形切换本地文件夹与历史会话；会话以 JSONL 持久化、可回放
+- **审批 / 中断**：plan / ask 权限模式下浏览器弹窗 `POST /api/confirm` 回传批准；`POST /api/interrupt` 在步骤边界中断
+- **实时输出**：工具（尤其 `run_command` / 后台命令）输出按事件流式上屏；后台任务 / 子 agent 有独立详情面板（命令、状态、输出、停止）
+- **设置持久化**：主题 / 侧栏状态写入 `.agent-settings.json`，白名单校验；localStorage 仅作主题首帧缓存防闪屏
+- **总结卡片**：`finish` 以独立卡片呈现（默认收起、右上角独立复制），与过程性正文区分
+
+### 4.8 子 agent 并行（`subagent_tools.py`）
+
+把大任务拆给独立子 agent，父 agent 上下文不被污染：
+
+- **两种并行模型**：`spawn_subagent(s)` 同步等待（线程并行，全部完成返回合并结果）；`start_subagents` + `wait_subagents` 异步批次（先去做别的事，回头收结果）
+- **隔离与约束**：子 agent 拥有独立 `ToolContext` 与上下文；**默认硬只读**（仅 read/list/search/glob/git 查看），`allow_write=true` 才放开；深度上限 2、并行上限 4、步数上限 20
+- **流式上行**：子 agent 运行期以 `SubagentStarted / SubagentEvent / SubagentStatus` 逐事件上行，父端（Web）可见过程
+
+### 4.9 后台长命令（`background.py` + `background_tools.py`）
+
+不阻塞主任务的耗时命令（dev server / 长构建 / 安装）：
+
+- `start_background` 启动后立刻返回任务 id，输出写入**环形缓冲**（4000 字符）由读线程实时收集
+- `poll_background` / `list_background` / `stop_background` 管理；`stop` 终止整个进程树
+- 进程异常退出时补发 `BackgroundStatus`，保证 JSONL 会话日志自洽、Web 回放不卡"运行中"
+
 ---
 
-## 5. 前端设计（CLI）
+## 5. 前端设计（CLI + Web）
 
-### 5.1 双入口
+> Web UI 是当前主形态（浏览器作为渲染器）；CLI 仍是事件订阅者之一，适合无图形环境 / 自动化。两者共用同一套事件流，主循环零改动。
+
+### 5.1 双入口（CLI）
 
 ```
 python -m agent                          # 交互式 REPL：输入任务，多轮对话
@@ -260,19 +303,19 @@ python -m agent "任务描述"               # 一次性模式（演示/自动�
 
 ---
 
-## 7. 开发里程碑（约 6 天）
+## 7. 开发里程碑（2026-08-27 → 2026-09-01，共 6 天）
 
 | 日 | 内容 | 验收标准 |
 |---|---|---|
-| D1 | 仓库初始化 + `llm.py` + `events.py` + 最小主循环（read_file / write_file / run_command / finish 四工具） | ✅ 完成：agent 自主跑通真实小任务（mock + 真实 Qwen API 双验证） |
-| D2 | `context.py` 预算 + 裁剪 + `loop.py` 错误处理完善 | ✅ 完成：错误自我修复闭环实测通过；裁剪在真实 API 下配对完整（budget=400 触发验证）；修复 finish 调用后历史配对缺失问题 |
-| D3 | 补齐 edit_file / list_dir / search + 流式输出 + CLI 打磨 + session.py | ✅ 完成：三个新工具实测通过（真实 API 综合任务验证）；凭据文件保护；--tools 列出工具 |
-| D4 | compaction + 文本协议兜底（特色功能） | ✅ 完成：compaction（分块压缩+合并）实测触发并正常收尾；三层策略 compaction → 裁剪 → 硬截断；文本协议兜底 D1 已就位 |
-| D5 | 测试（parser / context / tools）+ 使用文档 + 演示准备 | 全流程稳定可用，演示素材齐备 |
-| D6 | 缓冲：真实任务演练、修 bug、文档打磨 | 全流程彩排 |
+| D1 (8.27) | 仓库初始化 + `llm.py` + `events.py` + 最小主循环（read_file / write_file / run_command / finish 四工具） | ✅ 完成：agent 自主跑通真实小任务（mock + 真实 Qwen API 双验证） |
+| D2 (8.28) | `context.py` 预算 + 裁剪 + `loop.py` 错误处理完善 | ✅ 完成：错误自我修复闭环实测通过；裁剪在真实 API 下配对完整（budget=400 触发验证）；修复 finish 调用后历史配对缺失问题 |
+| D3 (8.29) | 补齐 edit_file / list_dir / search + 流式输出 + CLI 打磨 + session.py | ✅ 完成：三个新工具实测通过（真实 API 综合任务验证）；凭据文件保护；--tools 列出工具 |
+| D4 (8.30) | compaction + 文本协议兜底（特色功能） | ✅ 完成：compaction（分块压缩+合并）实测触发并正常收尾；三层策略 compaction → 裁剪 → 硬截断；文本协议兜底 D1 已就位 |
+| D5 (8.31) | 测试（parser / context / tools）+ 使用文档 + 演示准备 | ✅ 完成：51 项测试全绿（7 模块）；README.txt / README.md / 本设计文档齐备；演示视频录制并配音完成 |
+| D6 (9.1) | 缓冲：真实任务演练、修 bug、文档打磨 | ✅ 完成：mall 项目端到端演练；修复历史会话后台任务"假运行中"、子agent 详情重启后缺 prompt 气泡；DESIGN / README 对齐代码现状 |
 | 增强 | git 工具集、glob、会话恢复 --resume、审批模式 --permission ask、命令实时输出、usage 统计与 REPL 斜杠命令、参数类型校验 | ✅ 完成：29 项测试全绿，真实 API 验证 git/glob/恢复/流式输出 |
 | 增强2 | undo 编辑备份、规划模式 --plan（计划轮仅只读工具，批准后执行）、工作区记忆 .agent-memory.md | ✅ 完成：32 项测试全绿，真实 API 验证 undo/plan/记忆注入；批准→执行链路见 `loop.py` finish 分支 |
-| 增强3 | Web UI（SSE 事件流 + 浏览器渲染器）、Web 端审批与中断 | ✅ 完成：33 项测试全绿，冒烟验证页面/接口/运行链路 |
+| 增强3 | Web UI（SSE 事件流 + 浏览器渲染器）、Web 端审批与中断 | ✅ 完成：51 项测试全绿（7 模块），冒烟验证页面/接口/运行链路 |
 
 ---
 
