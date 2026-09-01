@@ -585,6 +585,43 @@ class WebAgentServer:
         self.hub.broadcast({"type": "SessionsChanged"})
         return True, ""
 
+    def delete_session(self, root: str, filename: str):
+        """删除**已归档**的会话（JSONL 文件 + 注册表条目，不可恢复）。
+
+        仅允许 archived=True 的会话删除——归档是用户显式的"不再需要"信号，
+        以此作为防误删闸门；未归档会话须先归档才能删。前端另有二次确认。
+        若删的是当前活跃会话，自动切到剩余最新会话（无剩余则新建）。
+        """
+        ws, rec = self._find_session(root, filename)
+        if ws is None or rec is None:
+            return False, "会话不存在"
+        if not rec.archived:
+            return False, "仅已归档的会话可删除（请先归档）"
+        if self.is_running():
+            return False, "任务执行中无法删除会话"
+        path = rec.path(ws.sessions_dir)
+        was_active = ws is self.workspace and ws.active_filename == rec.filename
+        if rec.writer:
+            try:
+                rec.writer.close()
+            except Exception:
+                pass
+            rec.writer = None
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError as e:
+            return False, f"删除失败：{e}"
+        ws.session_map.pop(rec.filename, None)
+        if was_active:
+            remaining = sorted(ws.session_map.values(), key=lambda r: r.mtime, reverse=True)
+            if remaining:
+                self._activate(remaining[0])
+            else:
+                self.new_session()
+        self.hub.broadcast({"type": "SessionsChanged"})
+        return True, ""
+
     def new_session_in(self, path: str):
         """在指定工作区新建会话（必要时先切换工作区）。"""
         if self.is_running():
@@ -1093,6 +1130,9 @@ def build_handler(server: WebAgentServer):
             elif path == "/api/session/archive":
                 ok, msg = server.set_session_flags(body.get("root", ""), body.get("filename", ""),
                                                    archived=bool(body.get("archived")))
+                self._json({"ok": ok} if ok else {"ok": False, "message": msg}, 200 if ok else 400)
+            elif path == "/api/session/delete":
+                ok, msg = server.delete_session(body.get("root", ""), body.get("filename", ""))
                 self._json({"ok": ok} if ok else {"ok": False, "message": msg}, 200 if ok else 400)
             else:
                 self.send_error(404)

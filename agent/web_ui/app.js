@@ -489,12 +489,26 @@ function render(ev, opts) {
       break;
     case "ErrorEvent": addIconNote("warn", ev.message, "error", turn); break;
     case "FinishEvent": {
-      // finish 不再作为工具卡片，直接以正文气泡呈现（与主体内容同款样式、支持 markdown）
+      // finish 总结以独立卡片呈现：默认收起、点头部展开；回合复制不含总结，
+      // 卡片右上角有独立复制按钮（只复制总结本身）。对齐 CLI ✅ 语义。
+      const sum = String(ev.summary || "");
+      const card = document.createElement("div");
+      card.className = "finish-summary";
+      const head = document.createElement("div");
+      head.className = "fs-head";
+      head.title = "点击展开 / 收起总结";
+      const tag = document.createElement("div");
+      tag.className = "fs-tag";
+      tag.innerHTML = '<span class="fs-caret">' + ICON.chevron + "</span>" + ICON_CHECK + "<span>任务总结</span>";
+      head.appendChild(tag);
+      head.appendChild(makeActBtn(ICON_COPY, "复制总结", btn => copyText(sum, btn)));
+      card.appendChild(head);
       const d = document.createElement("div");
-      d.className = "assistant-text";
-      d.innerHTML = renderMarkdown(ev.summary || "");
-      (turn || chatCol).appendChild(d); scrollToBottom();
-      if (turn && ev.summary) turn._replyText += (turn._replyText ? "\n\n" : "") + ev.summary;
+      d.className = "assistant-text fs-body";
+      d.innerHTML = renderMarkdown(sum);
+      card.appendChild(d);
+      head.addEventListener("click", () => card.classList.toggle("open"));
+      (turn || chatCol).appendChild(card); scrollToBottom();
       break;
     }
     case "Notice": addSystem(ev.message, "", turn); break;
@@ -550,8 +564,8 @@ function render(ev, opts) {
         setRunning(false);
         if (lastAssistant) lastAssistant.classList.remove("running");
       }
-      if (ev.status === "finished") addSystem("[完成]", "ok", turn);
-      else if (ev.status !== "interrupted") addSystem("[" + ev.status + "] " + (ev.message || ""), "error", turn);
+      // finished 状态由 finish 总结卡片表达，不再重复 [完成] 注记；error/interrupted 仍提示
+      if (ev.status !== "finished" && ev.status !== "interrupted") addSystem("[" + ev.status + "] " + (ev.message || ""), "error", turn);
       if (ev.steps != null) {
         const u = ev.usage || {};
         addSystem("[统计] 步骤 " + ev.steps + " | 输入 " + (u.prompt || 0) + " / 输出 " + (u.completion || 0) + " tokens", "", turn);
@@ -898,6 +912,21 @@ async function flagSession(url, ws, s, v) {
   loadTree();
 }
 
+/* 删除已归档会话（不可恢复；菜单项已两段式确认）。若删的是当前活跃会话，
+   后端会自动切到剩余最新会话并广播，前端随后回放新活跃会话。 */
+async function deleteSession(ws, s) {
+  const d = await postJSON("/api/session/delete", { root: ws.root, filename: s.filename });
+  if (!d.ok) { addSystem("⚠ " + (d.message || "删除失败"), "error"); loadTree(); return; }
+  const meta = await getJSON("/api/workspace");
+  const active = meta.active;
+  if (active && active !== s.filename) {
+    currentSessionFile = active;
+    const m = await getJSON("/api/session/events?filename=" + encodeURIComponent(active));
+    replayEvents(m.events || []);
+  }
+  loadTree(); loadFiles();
+}
+
 /* 会话行：名字 +（置顶标识）+ 相对时间，悬浮时时间让位给三点菜单按钮 */
 function makeSessionRow(ws, s) {
   const se = document.createElement("div");
@@ -930,6 +959,8 @@ function makeSessionRow(ws, s) {
       items.push({ label: "归档", onClick: () => flagSession("/api/session/archive", ws, s, true) });
     } else {
       items.push({ label: "取消归档", onClick: () => flagSession("/api/session/archive", ws, s, false) });
+      items.push({ label: "删除会话", danger: true, confirm: "确认删除？不可恢复",
+                   onClick: () => deleteSession(ws, s) });
     }
     openCtxMenu(items, gear);
   });
