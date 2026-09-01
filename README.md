@@ -45,6 +45,16 @@ python -m agent                  # 交互式 REPL，多轮对话
 - **权限模式**（输入区下拉）：`自动编辑` / `变更前确认` / `计划模式`（先只读探索 → 交出计划 → **批准后执行**）
 - **设置弹窗**：明暗主题、模型、工具列表、关于；主题与布局服务端持久化（`.coding-agent/.agent-settings.json`），重启 / 换浏览器不丢
 
+### 界面预览
+
+子 agent 并行执行，右侧展开对话式详情：
+
+![子 agent 并行与对话式详情](screenshots/web-ui-subagents.png)
+
+后台任务列表（已停止 / 完成）与折叠的任务总结卡片：
+
+![后台任务与折叠式任务总结](screenshots/web-ui-background-tasks.png)
+
 ## 命令行模式（REPL）
 
 ```bash
