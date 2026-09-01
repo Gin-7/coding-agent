@@ -625,6 +625,105 @@ class WebAgentServer:
                 events.append(obj)
         return {"filename": filename, "events": events}, 200
 
+    # ---------- 会话分叉 ----------
+
+    def fork_session(self, filename: str, turn: int):
+        """从指定会话第 N 个 agent 回合结束处分叉出一个新会话（turn 从 1 计数）。
+
+        一个 agent 回合以 RunResult 收尾、其后紧跟 MessagesDump（_persist_active 写入），
+        所以「回合边界」天然就是消息快照点，无需在事件流里额外维护索引。
+
+        新会话继承两样东西，缺一不可：
+        - 截断到该回合（含 MessagesDump）的事件流 → 界面能完整回放出分叉前的对话；
+        - 该回合的 MessagesDump.messages      → 切回来时能接着聊（LLM 上下文）。
+
+        注意：若原会话此前发生过压缩，MessagesDump 里存的就是压缩后的消息，
+        分叉出去的会话同样只继承摘要——事件流虽有原始事件，但消息快照已改写。
+        """
+        rec = self.workspace.get(filename)
+        if rec is None:
+            return {"error": "会话不存在"}, 404
+        if self.is_running():
+            return {"error": "任务执行中无法分叉"}, 409
+        try:
+            turn = int(turn)
+        except (TypeError, ValueError):
+            return {"error": "回合序号无效"}, 400
+        if turn < 1:
+            return {"error": "回合序号无效"}, 400
+        path = rec.path(self.workspace.sessions_dir)
+        if not path.exists():
+            return {"error": "会话文件不存在"}, 404
+
+        events = []
+        for line in path.read_text(encoding="utf-8").splitlines():
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(obj, dict):
+                events.append(obj)
+
+        # 定位第 N 个 RunResult
+        n = 0
+        run_idx = None
+        for i, e in enumerate(events):
+            if e.get("type") == "RunResult":
+                n += 1
+                if n == turn:
+                    run_idx = i
+                    break
+        if run_idx is None:
+            return {"error": f"该会话只有 {n} 个回合，无法在第 {turn} 回合分叉"}, 400
+
+        # 该回合的消息快照：RunResult 之后紧跟 MessagesDump
+        cut = run_idx
+        messages = None
+        for j in range(run_idx, len(events)):
+            e = events[j]
+            if e.get("type") == "MessagesDump" and e.get("messages"):
+                cut = j
+                messages = e["messages"]
+                break
+        if messages is None:
+            # 异常中断的回合可能没落盘快照，退回该回合之前最近的快照
+            for j in range(run_idx, -1, -1):
+                e = events[j]
+                if e.get("type") == "MessagesDump" and e.get("messages"):
+                    messages = e["messages"]
+                    break
+        if messages is None:
+            return {"error": "分叉点没有可用的消息快照"}, 400
+
+        head = events[:cut + 1]
+        # 兜底：head 末尾必须是 MessagesDump，否则切回该会话时读不到历史
+        if head[-1].get("type") != "MessagesDump":
+            head.append({"type": "MessagesDump", "messages": messages})
+
+        new_rec = self.workspace.new_session()
+        new_path = new_rec.path(self.workspace.sessions_dir)
+        base = (rec.name or "会话").strip()[:MAX_SESSION_NAME]
+        name = f"{base} · 分叉{turn}"
+        try:
+            with open(new_path, "w", encoding="utf-8") as f:
+                f.write(json.dumps({"type": "SessionMeta", "name": name},
+                                   ensure_ascii=False) + "\n")
+                for e in head:
+                    # 原会话的重命名/置顶/归档快照不适用于新会话
+                    if e.get("type") == "SessionMeta":
+                        continue
+                    f.write(json.dumps(e, ensure_ascii=False) + "\n")
+        except OSError as e:
+            return {"error": f"写入新会话失败：{e}"}, 500
+
+        new_rec.name = name
+        new_rec.renamed = True
+        new_rec.messages = list(messages)
+        new_rec.mtime = time.time()
+        self._activate(new_rec)
+        self.hub.broadcast({"type": "SessionsChanged"})
+        return {"ok": True, "filename": new_rec.filename, "name": name}, 200
+
     # ---------- 运行 ----------
 
     def is_running(self) -> bool:
@@ -968,6 +1067,12 @@ def build_handler(server: WebAgentServer):
                     self._json({"ok": True, "workspace": server.workspace_meta()})
                 else:
                     self._json({"ok": False, "message": msg}, 400)
+            elif path == "/api/session/fork":
+                data, code = server.fork_session(body.get("filename", ""), body.get("turn"))
+                if code == 200:
+                    self._json({**data, "workspace": server.workspace_meta()}, 200)
+                else:
+                    self._json({"ok": False, "message": data.get("error", "分叉失败")}, code)
             elif path == "/api/workspace/rename":
                 ok, msg = server.rename_workspace(body.get("path", ""), body.get("name", ""))
                 self._json({"ok": ok, "name": msg} if ok else {"ok": False, "message": msg},

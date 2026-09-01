@@ -11,7 +11,9 @@ let running = false;
 let lastAssistant = null;
 let lastCommandPre = null;
 let assistantRaw = "";
-let turn = null;             // 当前 agent 对话合并框
+let turn = null;             // 当前 agent 对话合并框（指向 .turn-body，外层 .agent-turn 由 _turnEl 引用）
+let turnCounter = 0;         // 主会话回合序号（与后端 RunResult 计数对齐，分叉定位用）
+let currentSessionFile = ""; // 当前会话文件名（分叉 API 参数）
 let lastActiveRoot = "";     // 上次活动工作区（用于文件树随工作区切换）
 const toolCards = new Map();
 const bgRows = new Map();    // 后台任务 task_id -> { row, status }
@@ -76,10 +78,72 @@ if (ctxRing) {
   ctxRing.addEventListener("mouseenter", () => { if (ctxTip) ctxTip.classList.add("show"); });
   ctxRing.addEventListener("mouseleave", () => { if (ctxTip) ctxTip.classList.remove("show"); });
 }
+/* ---------- 消息操作按钮（复制 / 分叉，悬浮显示） ---------- */
+const ICON_COPY = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 3.5H4A1.5 1.5 0 0 0 2.5 5v6.5"/></svg>';
+const ICON_FORK = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="4" cy="3.5" r="1.5"/><circle cx="4" cy="12.5" r="1.5"/><circle cx="12" cy="6" r="1.5"/><path d="M4 5v6"/><path d="M12 7.5c0 1.8-1.6 2.7-3.6 3.3"/></svg>';
+const ICON_CHECK = '<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3L13 4.5"/></svg>';
+
+/* 复制文本到剪贴板：优先 Clipboard API，失败降级 execCommand；btn 短暂显示对勾反馈 */
+async function copyText(text, btn) {
+  let ok = false;
+  try { await navigator.clipboard.writeText(text); ok = true; }
+  catch (e) {
+    const ta = document.createElement("textarea");
+    ta.value = text; ta.style.position = "fixed"; ta.style.opacity = "0";
+    document.body.appendChild(ta); ta.select();
+    try { ok = document.execCommand("copy"); } catch (e2) {}
+    document.body.removeChild(ta);
+  }
+  if (btn) {
+    const old = btn.innerHTML;
+    btn.innerHTML = ICON_CHECK;
+    btn.classList.add(ok ? "ok" : "err");
+    setTimeout(() => { btn.innerHTML = old; btn.classList.remove("ok", "err"); }, 1100);
+  }
+}
+
+function makeActBtn(icon, title, onClick) {
+  const b = document.createElement("button");
+  b.className = "msg-act-btn"; b.type = "button"; b.title = title; b.innerHTML = icon;
+  b.addEventListener("click", e => { e.stopPropagation(); onClick(b); });
+  return b;
+}
+
+/* 从主会话第 N 个回合（body._turnIndex）分叉出新会话：后端截断事件流+消息快照，
+   成功后前端切到新会话并回放分叉点之前的完整历史。 */
+async function forkTurn(body) {
+  const idx = body && body._turnIndex;
+  if (!idx || !body._turnEl || !body._turnEl.classList.contains("done")) return;  // 未完成回合无消息快照
+  if (running) { addSystem("⚠ 任务执行中无法分叉", "error"); return; }
+  if (!currentSessionFile) return;
+  try {
+    const r = await fetch("/api/session/fork", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: currentSessionFile, turn: idx })
+    });
+    const d = await r.json();
+    if (d.ok) {
+      currentSessionFile = d.filename;
+      const m = await getJSON("/api/session/events?filename=" + encodeURIComponent(d.filename));
+      replayEvents(m.events || []);
+      loadTree(); loadFiles();
+    } else {
+      addSystem("⚠ " + (d.message || "分叉失败"), "error");
+    }
+  } catch (e) { addSystem("⚠ 分叉请求失败", "error"); }
+}
+
 function addBubble(cls, text, parent, scroll) {
   const b = document.createElement("div");
   b.className = "bubble " + cls;
   if (text !== undefined) b.innerHTML = renderMarkdown(text);
+  if (cls === "user" && text !== undefined) {
+    const raw = String(text);                       // 复制原始输入，而非渲染后的 HTML
+    const bar = document.createElement("div");
+    bar.className = "msg-actions";
+    bar.appendChild(makeActBtn(ICON_COPY, "复制消息", btn => copyText(raw, btn)));
+    b.appendChild(bar);
+  }
   (parent || chatCol).appendChild(b);
   scrollToBottom(scroll);
   return b;
@@ -91,11 +155,28 @@ function addSystem(text, cls, parent, scroll) {
   (parent || chatCol).appendChild(b);
   scrollToBottom(scroll);
 }
-function makeTurn(parent) {
+/* agent 回合容器：外层 .agent-turn 承载悬浮按钮条，内层 .turn-body 承载内容。
+   返回 body——调用方 appendChild 到 body 即可，无需感知双层结构。
+   withFork=true 时（仅主会话回合）附加分叉按钮，回合完成（RunResult）后才可点。 */
+function makeTurn(parent, withFork) {
   const t = document.createElement("div");
   t.className = "agent-turn";
+  const body = document.createElement("div");
+  body.className = "turn-body";
+  t.appendChild(body);
+  const bar = document.createElement("div");
+  bar.className = "msg-actions";
+  bar.appendChild(makeActBtn(ICON_COPY, "复制回复", btn => copyText(body._replyText || "", btn)));
+  if (withFork) {
+    const forkBtn = makeActBtn(ICON_FORK, "从此回合分叉新会话", () => forkTurn(body));
+    forkBtn.classList.add("btn-fork");
+    bar.appendChild(forkBtn);
+  }
+  t.appendChild(bar);
+  body._turnEl = t; body._actions = bar;
+  body._replyText = "";
   (parent || chatCol).appendChild(t);
-  return t;
+  return body;
 }
 function updateChatHeader(name) {
   document.getElementById("chat-session-name").textContent = name || "—";
@@ -335,7 +416,8 @@ function render(ev, opts) {
     case "UserMessage":
       showEmpty(false);
       addBubble("user", ev.content);
-      turn = makeTurn();               // 每个 agent 对话合并为一个框
+      turn = makeTurn(null, true);      // 每个 agent 对话合并为一个框（带复制/分叉按钮条）
+      turn._turnIndex = ++turnCounter;  // 回合序号与后端 RunResult 计数对齐（分叉定位用）
       lastAssistant = null; lastCommandPre = null;
       break;
     case "TextDelta":
@@ -344,8 +426,10 @@ function render(ev, opts) {
         lastAssistant.className = "assistant-text" + (replay ? "" : " running");
         (turn || chatCol).appendChild(lastAssistant);
         assistantRaw = "";
+        if (turn && turn._replyText) turn._replyText += "\n\n";   // 回合内多个文本块之间补空行
       }
       assistantRaw += ev.text;
+      if (turn) turn._replyText += ev.text;
       lastAssistant.innerHTML = renderMarkdown(assistantRaw);
       scrollToBottom();
       break;
@@ -410,6 +494,7 @@ function render(ev, opts) {
       d.className = "assistant-text";
       d.innerHTML = renderMarkdown(ev.summary || "");
       (turn || chatCol).appendChild(d); scrollToBottom();
+      if (turn && ev.summary) turn._replyText += (turn._replyText ? "\n\n" : "") + ev.summary;
       break;
     }
     case "Notice": addSystem(ev.message, "", turn); break;
@@ -471,6 +556,7 @@ function render(ev, opts) {
         const u = ev.usage || {};
         addSystem("[统计] 步骤 " + ev.steps + " | 输入 " + (u.prompt || 0) + " / 输出 " + (u.completion || 0) + " tokens", "", turn);
       }
+      if (turn && turn._turnEl) turn._turnEl.classList.add("done");   // 回合完成：消息快照已落盘，启用分叉
       lastAssistant = null; lastCommandPre = null; turn = null; assistantRaw = "";
       lastCmdToolEl = null;
       if (!replay) { loadTree(); loadFiles(); }
@@ -483,6 +569,7 @@ function replayEvents(events) {
   chatCol.innerHTML = "";
   updateContextRing(0, 1);  // 先归零，回放中由 ContextUsageEvent 刷新到真实使用率
   turn = null; lastAssistant = null; lastCommandPre = null; assistantRaw = "";
+  turnCounter = 0;   // 回放从零重建，回合序号同步归零（分叉定位对齐后端 RunResult 计数）
   lastCmdToolEl = null; toolCards.clear();
   toolCards.clear();
   // 清空上一会话的任务列表（后台任务 / 子agent 随会话重建）
@@ -924,12 +1011,14 @@ async function loadTree() {
     if (!dataLoadedOnce) {
       dataLoadedOnce = true;
       const d = await getJSON("/api/workspace");
+      currentSessionFile = d.active || "";   // 首次加载记录当前会话（分叉 API 需要）
       const m = d.active ? await getJSON("/api/session/events?filename=" + encodeURIComponent(d.active)) : null;
       replayEvents(m ? m.events : []);
     }
     // 会话名头部 + 文件树随工作区切换
     const aw = list.find(w => w.is_active);
     const as = aw && (aw.sessions || []).find(s => s.filename === aw.active);
+    if (aw && aw.active) currentSessionFile = aw.active;
     updateChatHeader(as ? as.name : "—");
     if (activeRoot && activeRoot !== lastActiveRoot) { onWorkspaceChanged(); }
   } catch (e) { }
@@ -945,6 +1034,7 @@ async function selectSession(root, filename) {
     const r2 = await fetch("/api/session/select", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ filename }) });
     const d2 = await r2.json();
     if (d2.ok) {
+      currentSessionFile = filename;
       const m = await getJSON("/api/session/events?filename=" + encodeURIComponent(filename));
       replayEvents(m.events || []);
       loadTree(); loadFiles();
