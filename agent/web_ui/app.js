@@ -656,7 +656,7 @@ function setBgStatus(id, status, exit) {
   const e = bgRows.get(id);
   const tail = exit != null ? "（退出码 " + exit + "）" : "";
   const done = status === "done" || status === "stopped";
-  const text = (status === "stopped" ? "已停止" : status === "done" ? "已完成" : status) + tail;
+  const text = (status === "stopped" ? "已停止" : status === "done" ? "已完成" : status === "running" ? "运行中" : status) + tail;
   if (e) { e.statusEl.textContent = text; e.statusEl.className = "ti-status " + (done ? "ended" : "running"); e.rawStatus = status; e.exit = exit; }
   if (currentTaskId === id && !document.getElementById("task-detail").hidden) {
     const s = document.getElementById("td-status");
@@ -681,7 +681,7 @@ function addSubRow(ev) {
 }
 function setSubStatus(id, status) {
   const e = subRows.get(id);
-  const map = { done: "已完成", error: "失败", interrupted: "已中断", running: "运行中" };
+  const map = { done: "已完成", finished: "已完成", error: "失败", interrupted: "已中断", running: "运行中" };
   const text = map[status] || status;
   const done = status !== "running";
   if (e) { e.status.textContent = text; e.status.className = "ti-status " + (done ? "ended" : "running"); }

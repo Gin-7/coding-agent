@@ -5,6 +5,7 @@
 """
 import subprocess
 import threading
+import uuid
 from collections import deque
 
 from .tools.shell_tools import CREATE_NEW_PROCESS_GROUP, _decode
@@ -17,6 +18,10 @@ class BackgroundManager:
         self._tasks = {}
         self._lock = threading.Lock()
         self._counter = 0
+        # 每次运行（每个 AgentLoop）独立的前缀：后台任务 id 在「同一次运行」内
+        # 递增，但跨运行（同一会话文件拼接多轮时）不再唯一。加 per-manager 前缀，
+        # 保证全会话/全进程内 id 不会重复，避免回放时 Map 键覆盖与孤儿进程歧义。
+        self._uid = uuid.uuid4().hex[:6]
         # 由主循环注入的回调
         self.on_output = None  # Callable(task_id, text) 逐行实时输出
         self.emit = None       # Callable(dict) 状态事件
@@ -25,7 +30,7 @@ class BackgroundManager:
         """启动后台命令，立即返回 (结果dict, err)。"""
         with self._lock:
             self._counter += 1
-            task_id = f"bg-{self._counter}"
+            task_id = f"bg-{self._uid}-{self._counter}"
         try:
             proc = subprocess.Popen(
                 command, shell=True, cwd=str(cwd),

@@ -22,10 +22,11 @@ def test_background_run_and_poll(tmp):
     register_all()
     ws, ctx = _mgr_ctx(tmp, "bg")
     r = dispatch("start_background", {"command": "echo bg-hello"}, ctx)
-    assert r["ok"] and "bg-1" in r["output"]
+    assert r["ok"] and "bg-" in r["output"]
+    tid = next(iter(ctx.background._tasks.keys()))  # 取真实 task_id（格式含 per-run 前缀，不硬编码）
     p = ""
     for _ in range(30):
-        p = dispatch("poll_background", {"task_id": "bg-1"}, ctx)
+        p = dispatch("poll_background", {"task_id": tid}, ctx)
         if "done" in p["output"]:
             break
         time.sleep(0.2)
@@ -38,9 +39,10 @@ def test_background_stop(tmp):
     ws, ctx = _mgr_ctx(tmp, "bgstop")
     r = dispatch("start_background", {"command": "ping -n 30 127.0.0.1"}, ctx)
     assert r["ok"]
-    p = dispatch("stop_background", {"task_id": "bg-1"}, ctx)
+    tid = next(iter(ctx.background._tasks.keys()))
+    p = dispatch("stop_background", {"task_id": tid}, ctx)
     assert "已停止" in p["output"]
-    p2 = dispatch("poll_background", {"task_id": "bg-1"}, ctx)
+    p2 = dispatch("poll_background", {"task_id": tid}, ctx)
     assert "stopped" in p2["output"]
 
 
